@@ -26,7 +26,7 @@
  *
  * CURRENT STEP: full live game flow over chess.com (HTTP to find the
  * game, RSocket/WebSocket for live clocks/moves, result shown for
- * RESULT_DISPLAY_DURATION_MS after the game ends).
+ * resultDisplayDurationMs after the game ends - admin-portal configurable).
  *
  * REQUIRED BOARD SETTING (Arduino IDE > Tools > Partition Scheme):
  *   "Huge APP (3MB No OTA/1MB SPIFFS)" - the default scheme only gives
@@ -165,10 +165,11 @@ void loop() {
   static bool wasShowingResult = false;
   bool resultWindowChanged = (showingResultNow != wasShowingResult);
   if (wasShowingResult && !showingResultNow) {
-    // The 15s result window just ended - clear it so the waiting screen
-    // goes back to "Waiting for game..." instead of showing the old
-    // result forever.
+    // The result window (resultDisplayDurationMs) just ended - clear it
+    // so the waiting screen goes back to "Waiting for game..." instead of
+    // showing the old result forever.
     state.lastResultSummary[0] = '\0';
+    state.lastGameOutcome = OUTCOME_NONE;
     state.resultDisplayUntilMs = 0;
   }
   wasShowingResult = showingResultNow;

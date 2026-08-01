@@ -116,7 +116,8 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
 
     int winnerIdx = -1;
     for (int i = 0; i < (int)results.size() && i < 2; i++) {
-      if (strcmp((const char *)results[i], "win") == 0) winnerIdx = i;
+      const char *r = results[i];  // null if this element isn't a string - guard before strcmp (crashes on nullptr)
+      if (r != nullptr && strcmp(r, "win") == 0) winnerIdx = i;
     }
 
     int meIdx = -1;
@@ -145,7 +146,8 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     // side's is the actual cause of a decisive game; for a draw both
     // sides normally carry the same word (e.g. "agreed"/"agreed").
     int reasonIdx = (winnerIdx == -1) ? 0 : (1 - winnerIdx);
-    const char *reason = (reasonIdx < (int)results.size()) ? (const char *)results[reasonIdx] : "?";
+    const char *reason = (reasonIdx < (int)results.size()) ? (const char *)results[reasonIdx] : nullptr;
+    if (reason == nullptr) reason = "?";
     strncpy(g_state->lastResultReason, reason, sizeof(g_state->lastResultReason) - 1);
     g_state->lastResultReason[sizeof(g_state->lastResultReason) - 1] = '\0';
 
@@ -176,7 +178,8 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
       // Fallback (myUsername not configured): neutral "name: reason [rating]" per player.
       int pos = 0;
       for (int i = 0; i < 2; i++) {
-        const char *r = (i < (int)results.size()) ? (const char *)results[i] : "?";
+        const char *r = (i < (int)results.size()) ? (const char *)results[i] : nullptr;
+        if (r == nullptr) r = "?";
         int ratingNew = 0, ratingDelta = 0;
         if (i < (int)ratings.size()) {
           JsonArray pair = ratings[i];

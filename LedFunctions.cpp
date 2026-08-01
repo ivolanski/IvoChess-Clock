@@ -75,7 +75,7 @@ void updateLEDs(const ClockState &state) {
     }
   }
 
-  if (state.batteryPercentage > 0 && state.batteryPercentage < 15) {
+  if (state.batteryPercentage > 0 && state.batteryPercentage < LOW_BATTERY_THRESHOLD_PERCENT) {
     static bool blinkOn = false;
     blinkOn = !blinkOn;
     if (blinkOn) {

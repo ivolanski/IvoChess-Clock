@@ -271,6 +271,13 @@ static void drawGameContent(const ClockState &state) {
 // (see IvoChess_Clock.ino - falls back to periodic full refresh
 // instead). Left here for future debugging if we want to revisit true
 // partial refresh.
+//
+// NOTE if reviving this: it still assumes raw index 0 -> top(45),
+// index 1 -> bottom(90). drawGameContent() no longer does - it now
+// places whichever player matches myUsername at the bottom (see
+// myPlayerIndex()), so this would draw the wrong player's clock in the
+// wrong box whenever "me" isn't raw index 1. Thread topIndex/bottomIndex
+// through here the same way before re-enabling.
 void updateGameClocksPartial(const ClockState &state) {
   const int baselineY[2] = {45 + CLOCK_BASELINE_OFFSET, 90 + CLOCK_BASELINE_OFFSET};  // matches drawPlayerLine(45/90, ...)
   int boxX = clockBoxX();

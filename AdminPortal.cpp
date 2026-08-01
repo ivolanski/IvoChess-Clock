@@ -218,8 +218,9 @@ static void handleSave() {
     currentDataSource = (DataSourceType)server.arg("datasrc").toInt();
   }
   if (server.hasArg("resultdur")) {
-    long secs = server.arg("resultdur").toInt();
-    if (secs < 1) secs = 1;
+    // Server-side bounds matching the form's min/max - the HTML
+    // attributes are only a UI hint, a raw POST could send anything.
+    long secs = constrain(server.arg("resultdur").toInt(), 3, 120);
     resultDisplayDurationMs = (unsigned long)secs * 1000UL;
   }
 
