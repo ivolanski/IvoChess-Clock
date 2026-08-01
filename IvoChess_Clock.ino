@@ -30,7 +30,7 @@
  *
  * REQUIRED BOARD SETTING (Arduino IDE > Tools > Partition Scheme):
  *   "Huge APP (3MB No OTA/1MB SPIFFS)" - the default scheme only gives
- *   1.2MB to the app, and this sketch (GxEPD2 + fonts + ArduinoWebsockets
+ *   1.2MB to the app, and this sketch (GxEPD2 + fonts + WebSockets
  *   + ArduinoJson) is right at that ceiling; it will fail to compile
  *   ("text section exceeds available space") on the default scheme. No
  *   OTA update code exists anywhere in this project, so losing the OTA
@@ -42,11 +42,19 @@
  *   - Adafruit BusIO
  *   - Adafruit NeoPixel
  *   - ArduinoJson (Benoit Blanchon)
- *   - ArduinoWebsockets (Gil Maimon) - for the live RSocket connection.
- *     Switched from "WebSockets" (Links2004) after that one kept
- *     dropping the connection with no server-provided reason; this one
- *     skips TLS cert validation by default on ESP32 and has cleaner
- *     custom-header support (both were suspects).
+ *   - WebSockets (Markus Sattler / Links2004) - for the live RSocket
+ *     connection. This project tried ArduinoWebsockets (Gil Maimon)
+ *     first, on the assumption it "skips TLS cert validation by default
+ *     on ESP32" - that assumption was wrong: its ESP32 code path never
+ *     actually calls setInsecure() on the underlying TLS client, so
+ *     client.connect() failed immediately every time. Back on
+ *     WebSockets (Links2004) now that ITS actual bug (a malformed
+ *     handshake from a header-building double-\r\n - see the comment on
+ *     setExtraHeaders() in LiveGameClient.cpp) is fixed instead of
+ *     worked around.
+ *   IMPORTANT: WebSockets needs a ONE-LINE PATCH to keep working - see
+ *     LiveGameClient.cpp's top comment for what and why. Redo it if this
+ *     library gets reinstalled/updated.
  *   (Preferences, WebServer, DNSServer, ESPmDNS already ship with the
  *    ESP32 core - no WiFiManager needed anymore, AdminPortal replaces it)
  */
@@ -64,9 +72,13 @@
 // IMPORTANT: the default ESP32 Arduino loop() task stack (often only
 // 8KB) is a well-known source of TLS/WSS connections failing silently
 // or crashing the board - a TLS handshake needs more stack than that.
-// This is a strong suspect for BOTH the mysterious reboot we saw once
-// AND client.connect() returning false immediately with WiFi already
-// connected. Must be a macro call at file scope, before setup().
+// Kept as a precaution given how much runs in loop() here (display,
+// admin portal, live WebSocket) - not what caused the earlier
+// "client.connect() returns false immediately" symptom (that turned out
+// to be the ArduinoWebsockets setInsecure() bug documented in
+// LiveGameClient.cpp), but still cheap insurance against TLS-under-
+// stack-pressure issues in general. Must be a macro call at file scope,
+// before setup().
 SET_LOOP_TASK_STACK_SIZE(16 * 1024);
 
 static ClockState state = {
@@ -89,6 +101,8 @@ static ClockState state = {
   .activePlayerIndex = -1,
   .lastResultSummary = "",
   .resultDisplayUntilMs = 0,
+  .clockBaselineMs = {0, 0},
+  .clockBaselineAtMs = 0,
 
   .lastDisplayUpdate = 0,
   .lastFullRefresh = 0,
@@ -172,6 +186,22 @@ void loop() {
     state.lastFullRefresh = now;
     lastClockRefresh = now;
   } else if (state.hasGame && (now - lastClockRefresh >= GAME_CLOCK_REFRESH_INTERVAL_MS)) {
+    // No real RSocket clock update landed during this window (that would
+    // have gone through the moveChanged/needsFullRefresh branch above,
+    // which resets lastClockRefresh) - extrapolate locally so the display
+    // doesn't just sit frozen between RSocket updates. Computed fresh
+    // from clockBaselineMs/clockBaselineAtMs (the last REAL values +
+    // when they were captured - see ClockState.h) each time, rather than
+    // chaining off the previously-displayed value, so it can't drift from
+    // loop() timing jitter (e.g. a slow e-paper full refresh delaying
+    // this branch past the nominal 10s) - always exact-elapsed-time
+    // accurate relative to the real anchor point.
+    if (state.activePlayerIndex == 0 || state.activePlayerIndex == 1) {
+      int idx = state.activePlayerIndex;
+      long elapsed = (long)(now - state.clockBaselineAtMs);
+      long extrapolated = state.clockBaselineMs[idx] - elapsed;
+      state.players[idx].clockMs = (extrapolated > 0) ? extrapolated : 0;
+    }
     // Real partial-window refresh (updateGameClocksPartial) caused
     // visual corruption on real hardware, so for now we just do a full
     // redraw periodically instead of every second - less "live", but

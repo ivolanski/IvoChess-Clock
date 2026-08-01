@@ -36,6 +36,17 @@ struct ClockState {
   char lastResultSummary[128];
   unsigned long resultDisplayUntilMs;  // 0 = not showing a result right now; else millis() timestamp until which the result screen stays up
 
+  // Anchor for local clock extrapolation between RSocket updates: the
+  // last REAL clock values from RSocket (or 0/0 at game start before the
+  // first one arrives) and when they were captured. NEVER touched by the
+  // periodic local-extrapolation tick in IvoChess_Clock.ino - only by a
+  // real RSocket clock update (LiveGameClient.cpp) or a new game
+  // starting (GameDataSource.cpp) - so extrapolation is always computed
+  // fresh from this fixed point + elapsed time, instead of chaining off
+  // an already-extrapolated value (which would compound drift).
+  long clockBaselineMs[2];
+  unsigned long clockBaselineAtMs;
+
   // --- redraw control ---
   unsigned long lastDisplayUpdate;
   unsigned long lastFullRefresh;

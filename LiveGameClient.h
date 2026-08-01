@@ -14,6 +14,14 @@ void liveGameDisconnect();
 // True while a live connection is open/active.
 bool liveGameIsConnected();
 
+// True if we're supposedly connected but haven't received ANY RSocket
+// frame (KEEPALIVE included - the server sends one every
+// RSOCKET_KEEPALIVE_MS) in well over that interval. Catches a "zombie"
+// connection - TCP socket that never fired a disconnect event but also
+// isn't actually delivering data anymore - which liveGameIsConnected()
+// alone can't see.
+bool liveGameIsStale();
+
 // Pumps the WebSocket client (processes incoming frames as they arrive)
 // and updates 'state' (clocks/moveCount/activePlayerIndex, or
 // hasGame=false + lastResultSummary + resultDisplayUntilMs when the game

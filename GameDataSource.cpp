@@ -15,7 +15,7 @@ static unsigned long lastPollAttempt = 0;
 // state.hasGame stuck true forever with stale clocks/move count on screen.
 static bool liveWasConnected = false;
 static unsigned long liveConnectStartedAt = 0;
-#define LIVE_CONNECT_GRACE_MS 8000  // handshake can take a few seconds; don't bail before giving it a fair shot
+#define LIVE_CONNECT_GRACE_MS 15000  // handshake can take a few seconds, more so when loop() is delayed by a blocking e-paper refresh; don't bail before giving it a fair shot
 
 // ---- source: chess.com via WiFi (HTTP to find the game, then RSocket/WebSocket for live data) ----
 static bool updateFromChessComWiFi(ClockState &state) {
@@ -36,6 +36,10 @@ static bool updateFromChessComWiFi(ClockState &state) {
   }
   lastPollAttempt = now;
 
+  char previousGameId[sizeof(currentGame.id)];
+  strncpy(previousGameId, currentGame.id, sizeof(previousGameId));
+  previousGameId[sizeof(previousGameId) - 1] = '\0';
+
   bool found = fetchActiveGame(currentGame, state.apiStatus, sizeof(state.apiStatus));
   state.apiOk = (strncmp(state.apiStatus, "OK", 2) == 0);
 
@@ -43,11 +47,36 @@ static bool updateFromChessComWiFi(ClockState &state) {
     return false;
   }
 
+  // gameDataSourceFastTick() drops state.hasGame back to false whenever
+  // the live WebSocket connection is lost/stale, specifically so we come
+  // back here and reconnect - NOT so we treat "still the same game" as
+  // "a new game starting". Re-zeroing moveCount/activePlayerIndex, and
+  // especially clockMs (currentGame.players[].clockMs is always 0 here -
+  // the HTTP discovery endpoint never carries live clock values, only
+  // the RSocket stream does), on every reconnect was flashing the screen
+  // back to "Move 0 / 00:00" mid-game each time the connection blipped.
+  bool sameGameAsBefore = (previousGameId[0] != '\0') && (strcmp(previousGameId, currentGame.id) == 0);
+
   state.hasGame = true;
-  state.players[0] = currentGame.players[0];
-  state.players[1] = currentGame.players[1];
-  state.moveCount = 0;
-  state.activePlayerIndex = -1;
+
+  if (sameGameAsBefore) {
+    Serial.printf("[GameDataSource] Reconnecting to game already in progress (id=%s) - keeping move %d / clocks as-is.\n",
+                  currentGame.id, state.moveCount);
+    for (int i = 0; i < 2; i++) {
+      strncpy(state.players[i].username, currentGame.players[i].username, USERNAME_MAX_LEN - 1);
+      state.players[i].username[USERNAME_MAX_LEN - 1] = '\0';
+      state.players[i].rating = currentGame.players[i].rating;
+      // clockMs, moveCount, activePlayerIndex, clockBaseline* intentionally left alone.
+    }
+  } else {
+    state.players[0] = currentGame.players[0];
+    state.players[1] = currentGame.players[1];
+    state.moveCount = 0;
+    state.activePlayerIndex = -1;
+    state.clockBaselineMs[0] = currentGame.players[0].clockMs;
+    state.clockBaselineMs[1] = currentGame.players[1].clockMs;
+    state.clockBaselineAtMs = now;
+  }
 
   liveWasConnected = false;
   liveConnectStartedAt = now;
@@ -87,6 +116,19 @@ void gameDataSourceFastTick(ClockState &state) {
 
   if (liveGameIsConnected()) {
     liveWasConnected = true;
+
+    // The TCP socket can go quietly one-way-dead without ever firing a
+    // disconnect event (server/NAT/network just stops delivering, no
+    // FIN/RST seen) - liveGameIsConnected() alone can't see that.
+    // liveGameIsStale() catches it by watching for a gap since the last
+    // RSocket frame (KEEPALIVE included) well past the server's normal
+    // keepalive cadence.
+    if (liveGameIsStale()) {
+      Serial.println("[GameDataSource] Live connection stale (no frames received) - forcing reconnect.");
+      liveGameDisconnect();
+      state.hasGame = false;
+      liveWasConnected = false;
+    }
     return;
   }
 

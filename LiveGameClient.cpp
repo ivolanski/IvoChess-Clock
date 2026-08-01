@@ -3,11 +3,9 @@
 #include "AdminPortal.h"
 #include "RSocketCodec.h"
 
-#include <ArduinoWebsockets.h>
+#include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <WiFi.h>
-
-using namespace websockets;
 
 // ---------------------------------------------------------------------------
 // This ports the RSocket application logic from a Python prototype that
@@ -27,20 +25,39 @@ using namespace websockets;
 //     events within the same move, whichever clock actually decreased
 //     confirms/corrects the guess.
 //
-// WEBSOCKET LIBRARY: using ArduinoWebsockets (gilmaimon) instead of
-// WebSockets (Links2004) - switched after the Links2004 client kept
-// dropping the connection right after opening ("Connection lost", no
-// server-provided reason) despite matching every header the validated
-// Python client sends. ArduinoWebsockets does not validate the TLS
-// certificate chain by default on ESP32 (no fingerprint/CA dance
-// needed), which was one of our suspects.
+// WEBSOCKET LIBRARY: WebSockets (Links2004/Markus Sattler), NOT
+// ArduinoWebsockets (gilmaimon) - that one was tried first because it
+// "does not validate the TLS certificate chain by default on ESP32", but
+// that turned out to be a wrong assumption: its ESP32 branch of
+// upgradeToSecuredConnection() (websockets_client.cpp) never actually
+// calls setInsecure() on the underlying WiFiClientSecure - its own
+// WebsocketsClient::setInsecure() just clears a few cert pointers that
+// were already null, so the real TLS client had no CA and no
+// insecure-mode set, and client.connect() failed immediately (returned
+// false) every time. WebSockets (Links2004) needed a real fix too - its
+// own bug (see beginWatching()/setExtraHeaders below) is now fixed, and
+// this is the exact same code path already validated live against
+// chess.com on this hardware.
+//
+// IMPORTANT: this depends on a ONE-LINE PATCH to the locally installed
+// WebSockets library (WebSocketsClient.cpp, in sendHeader()) - see the
+// comment on setExtraHeaders() below for what it fixes and why it's
+// needed. If this library gets reinstalled/updated, redo that patch or
+// the connection will drop right after every SETUP frame.
 // ---------------------------------------------------------------------------
 
-static WebsocketsClient client;
+static WebSocketsClient webSocket;
 static ClockState *g_state = nullptr;
 static bool connected = false;
 static char currentWatchRoute[160] = "";
 static uint32_t requestStreamId = 1;
+static unsigned long lastFrameReceivedAtMs = 0;
+
+// Generous margin over RSOCKET_KEEPALIVE_MS (the server sends a KEEPALIVE
+// at roughly that cadence) - a real network hiccup or a slow loop() tick
+// (e.g. a blocking full e-paper refresh) can delay one KEEPALIVE without
+// anything actually being wrong.
+#define LIVE_STALE_THRESHOLD_MS (RSOCKET_KEEPALIVE_MS * 3)
 
 static long lastClocks[2] = {0, 0};
 static int lastMoveCount = -1;
@@ -79,7 +96,7 @@ static void updateActiveIndex(long newClocks[2], int moveCount) {
 }
 
 static void sendFrame(const uint8_t *buf, size_t len) {
-  client.sendBinary((const char *)buf, len);
+  webSocket.sendBIN(buf, len);
 }
 
 static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
@@ -140,6 +157,12 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
   g_state->players[1].clockMs = newClocks[1];
   g_state->moveCount = moveCount;
   g_state->activePlayerIndex = activeIndexGuess;
+
+  // Fresh anchor for local extrapolation (IvoChess_Clock.ino) between now
+  // and whenever the next real RSocket clock update lands.
+  g_state->clockBaselineMs[0] = newClocks[0];
+  g_state->clockBaselineMs[1] = newClocks[1];
+  g_state->clockBaselineAtMs = millis();
 }
 
 static void handleFrame(const uint8_t *payload, size_t len) {
@@ -187,38 +210,35 @@ static void handleFrame(const uint8_t *payload, size_t len) {
   }
 }
 
-static void onMessageCallback(WebsocketsMessage message) {
-  if (message.isBinary()) {
-    const std::string &raw = message.rawData();
-    handleFrame((const uint8_t *)raw.data(), raw.length());
-  } else {
-    // Not expected (chess.com's RSocket connection is binary-only), but
-    // if the server sends a text error message instead, show it rather
-    // than silently dropping it.
-    Serial.print("[LiveGame] Unexpected TEXT frame: ");
-    Serial.println(message.data());
-  }
-}
+static void onWsEvent(WStype_t type, uint8_t *payload, size_t length) {
+  switch (type) {
+    case WStype_CONNECTED: {
+      Serial.printf("[LiveGame] WebSocket connected (free heap: %u bytes), sending SETUP + REQUEST_STREAM...\n", ESP.getFreeHeap());
 
-static void onEventCallback(WebsocketsEvent event, String data) {
-  if (event == WebsocketsEvent::ConnectionOpened) {
-    Serial.printf("[LiveGame] WebSocket connected (free heap: %u bytes), sending SETUP + REQUEST_STREAM...\n", ESP.getFreeHeap());
+      uint8_t buf[128];
+      size_t n = encodeSetup(buf, sizeof(buf), RSOCKET_KEEPALIVE_MS, RSOCKET_LIFETIME_MS);
+      if (n > 0) sendFrame(buf, n);
 
-    uint8_t buf[128];
-    size_t n = encodeSetup(buf, sizeof(buf), RSOCKET_KEEPALIVE_MS, RSOCKET_LIFETIME_MS);
-    if (n > 0) sendFrame(buf, n);
+      n = encodeRequestStream(buf, sizeof(buf), requestStreamId, currentWatchRoute);
+      if (n > 0) sendFrame(buf, n);
 
-    n = encodeRequestStream(buf, sizeof(buf), requestStreamId, currentWatchRoute);
-    if (n > 0) sendFrame(buf, n);
-
-    connected = true;
-  } else if (event == WebsocketsEvent::ConnectionClosed) {
-    Serial.printf("[LiveGame] WebSocket disconnected (free heap: %u bytes)\n", ESP.getFreeHeap());
-    connected = false;
-  } else if (event == WebsocketsEvent::GotPing) {
-    Serial.println("[LiveGame] Got WS ping (library auto-replies with pong).");
-  } else if (event == WebsocketsEvent::GotPong) {
-    Serial.println("[LiveGame] Got WS pong.");
+      connected = true;
+      lastFrameReceivedAtMs = millis();
+      break;
+    }
+    case WStype_DISCONNECTED:
+      Serial.printf("[LiveGame] WebSocket disconnected (free heap: %u bytes)\n", ESP.getFreeHeap());
+      connected = false;
+      break;
+    case WStype_BIN:
+      lastFrameReceivedAtMs = millis();
+      handleFrame(payload, length);
+      break;
+    case WStype_ERROR:
+      Serial.println("[LiveGame] WebSocket error.");
+      break;
+    default:
+      break;  // text/ping/pong not expected on this connection
   }
 }
 
@@ -229,39 +249,49 @@ void liveGameConnect(const GameInfo &game) {
   resetTrackingState();
 
   // Same header set the validated Python client sends for this exact
-  // connection. ArduinoWebsockets also sends its own default Origin/
-  // User-Agent if we don't override them, but we set them explicitly to
-  // match Python exactly rather than rely on the library's defaults.
+  // connection, plus a few headers a real Chrome browser sends on a
+  // same-origin WebSocket upgrade (Accept-Language, Sec-Fetch-*) so this
+  // doesn't stick out as an obviously-non-browser client.
+  //
+  // NO trailing "\r\n" after the LAST header line here: WebSocketsClient
+  // does "handshake += extraHeaders + NEW_LINE" internally (one \r\n
+  // added FOR you after this whole block). If the last line already
+  // ended in \r\n, that became "\r\n\r\n" - a premature blank line in the
+  // middle of the HTTP request - and everything the library appended
+  // after (its own default User-Agent + the real terminating blank line)
+  // became leftover bytes that chess.com's RSocket backend read as the
+  // first (garbage) WebSocket frame and closed the connection over,
+  // ~50ms after every SETUP frame. That was the actual bug behind the
+  // "connection lost, no server-provided reason" this project hit
+  // before switching away from this library the first time.
   char cookieValue[PHPSESSID_MAX_LEN + 32];
   snprintf(cookieValue, sizeof(cookieValue), "PHPSESSID=%s", phpsessid);
-  client.addHeader("Cookie", cookieValue);
-  client.addHeader("Origin", "https://www.chess.com");
-  client.addHeader("User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-
-  client.onMessage(onMessageCallback);
-  client.onEvent(onEventCallback);
-
-  // This library DOES have a real setInsecure() on ESP32 (unlike the
-  // previous one) - calling it explicitly rather than relying on
-  // whatever the default happens to be for this installed version.
-  client.setInsecure();
-
-  char url[220];
-  snprintf(url, sizeof(url), "wss://www.chess.com%s", game.rsocketUrl);
+  String headers;
+  headers += "Cookie: " + String(cookieValue) + "\r\n";
+  headers += "Origin: https://www.chess.com\r\n";
+  headers += "Accept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7\r\n";
+  headers += "Sec-Fetch-Dest: empty\r\n";
+  headers += "Sec-Fetch-Mode: websocket\r\n";
+  headers += "Sec-Fetch-Site: same-origin\r\n";
+  headers += "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+             "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+  webSocket.setExtraHeaders(headers.c_str());
+  webSocket.onEvent(onWsEvent);
 
   Serial.printf("[LiveGame] Free heap before connecting: %u bytes\n", ESP.getFreeHeap());
-  Serial.printf("[LiveGame] Connecting to %s (route=%s)\n", url, currentWatchRoute);
+  Serial.printf("[LiveGame] Connecting to wss://www.chess.com%s (route=%s)\n", game.rsocketUrl, currentWatchRoute);
 
-  bool ok = client.connect(url);
-  if (!ok) {
-    Serial.printf("[LiveGame] client.connect() returned false (failed immediately). WiFi.status()=%d\n", WiFi.status());
-  }
+  lastFrameReceivedAtMs = millis();  // reset the staleness clock before the handshake even starts
+
+  // game.rsocketUrl is a PATH relative to www.chess.com (e.g.
+  // "/service/play-eu-1-2/rsocket"), not a full URL with its own host -
+  // matches what ChessApiFunctions.cpp stores it as, straight from the
+  // chess.com API response.
+  webSocket.beginSSL("www.chess.com", 443, game.rsocketUrl, "", "");  // no fingerprint, no subprotocol
 }
 
 void liveGameDisconnect() {
-  client.close();
+  webSocket.disconnect();
   connected = false;
 }
 
@@ -269,7 +299,11 @@ bool liveGameIsConnected() {
   return connected;
 }
 
+bool liveGameIsStale() {
+  return connected && (millis() - lastFrameReceivedAtMs > LIVE_STALE_THRESHOLD_MS);
+}
+
 void liveGameLoop(ClockState &state) {
   g_state = &state;
-  client.poll();
+  webSocket.loop();
 }
