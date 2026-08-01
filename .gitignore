@@ -1,0 +1,13 @@
+# Arduino IDE / arduino-cli build artifacts (if ever built in-place)
+build/
+*.bin
+*.elf
+*.map
+
+# Editor/IDE
+.vscode/
+.vs/
+
+# OS
+.DS_Store
+Thumbs.db
