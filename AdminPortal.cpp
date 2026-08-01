@@ -10,6 +10,18 @@
 #include <ESPmDNS.h>
 
 char phpsessid[PHPSESSID_MAX_LEN] = DEFAULT_PHPSESSID;
+char myUsername[USERNAME_MAX_LEN] = "";
+
+uint8_t ledColorNoWifi[3];
+uint8_t ledColorLowBattery[3];
+uint8_t ledColorWon[3];
+uint8_t ledColorLost[3];
+uint8_t ledColorDraw[3];
+uint8_t ledColorMyTurn[3];
+uint8_t ledColorOpponentTurn[3];
+uint8_t ledBrightnessDay = DEFAULT_LED_BRIGHTNESS;
+uint8_t ledBrightnessNight = DEFAULT_LED_BRIGHTNESS_NIGHT;
+unsigned long resultDisplayDurationMs = DEFAULT_RESULT_DISPLAY_DURATION_SEC * 1000UL;
 
 static char wifiSSID[WIFI_SSID_MAX_LEN] = DEFAULT_WIFI_SSID;
 static char wifiPassword[WIFI_PASS_MAX_LEN] = DEFAULT_WIFI_PASSWORD;
@@ -20,23 +32,68 @@ static DNSServer dnsServer;
 static ClockState *g_state = nullptr;
 static bool apMode = false;
 
+// ---- small "#rrggbb" <-> {r,g,b} helpers, used for the LED color pickers ----
+static void hexToRgb(const String &hex, uint8_t out[3]) {
+  if (hex.length() != 7 || hex[0] != '#') {
+    out[0] = out[1] = out[2] = 0;
+    return;
+  }
+  out[0] = (uint8_t)strtoul(hex.substring(1, 3).c_str(), nullptr, 16);
+  out[1] = (uint8_t)strtoul(hex.substring(3, 5).c_str(), nullptr, 16);
+  out[2] = (uint8_t)strtoul(hex.substring(5, 7).c_str(), nullptr, 16);
+}
+
+static String rgbToHex(const uint8_t rgb[3]) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "#%02x%02x%02x", rgb[0], rgb[1], rgb[2]);
+  return String(buf);
+}
+
 static void loadConfig() {
   prefs.begin(PREFS_NAMESPACE, /*readOnly=*/true);
   prefs.getString(PREFS_KEY_PHPSESSID, DEFAULT_PHPSESSID).toCharArray(phpsessid, sizeof(phpsessid));
+  prefs.getString("my_username", "").toCharArray(myUsername, sizeof(myUsername));
   prefs.getString("wifi_ssid", DEFAULT_WIFI_SSID).toCharArray(wifiSSID, sizeof(wifiSSID));
   prefs.getString("wifi_pass", DEFAULT_WIFI_PASSWORD).toCharArray(wifiPassword, sizeof(wifiPassword));
   currentLanguage = (Language)prefs.getInt("lang", LANG_EN);
   currentDataSource = (DataSourceType)prefs.getInt("datasrc", DATA_SOURCE_CHESSCOM_WIFI);
+
+  hexToRgb(prefs.getString("led_nowifi", DEFAULT_LED_NO_WIFI), ledColorNoWifi);
+  hexToRgb(prefs.getString("led_lowbatt", DEFAULT_LED_LOW_BATTERY), ledColorLowBattery);
+  hexToRgb(prefs.getString("led_won", DEFAULT_LED_WON), ledColorWon);
+  hexToRgb(prefs.getString("led_lost", DEFAULT_LED_LOST), ledColorLost);
+  hexToRgb(prefs.getString("led_draw", DEFAULT_LED_DRAW), ledColorDraw);
+  hexToRgb(prefs.getString("led_myturn", DEFAULT_LED_MY_TURN), ledColorMyTurn);
+  hexToRgb(prefs.getString("led_oppturn", DEFAULT_LED_OPPONENT_TURN), ledColorOpponentTurn);
+  ledBrightnessDay = (uint8_t)prefs.getUInt("led_bright_day", DEFAULT_LED_BRIGHTNESS);
+  ledBrightnessNight = (uint8_t)prefs.getUInt("led_bright_night", DEFAULT_LED_BRIGHTNESS_NIGHT);
+
+  resultDisplayDurationMs = (unsigned long)prefs.getUInt("result_dur_s", DEFAULT_RESULT_DISPLAY_DURATION_SEC) * 1000UL;
+
   prefs.end();
 }
 
 static void saveConfig() {
   prefs.begin(PREFS_NAMESPACE, /*readOnly=*/false);
   prefs.putString(PREFS_KEY_PHPSESSID, phpsessid);
+  prefs.putString("my_username", myUsername);
   prefs.putString("wifi_ssid", wifiSSID);
   prefs.putString("wifi_pass", wifiPassword);
   prefs.putInt("lang", (int)currentLanguage);
   prefs.putInt("datasrc", (int)currentDataSource);
+
+  prefs.putString("led_nowifi", rgbToHex(ledColorNoWifi));
+  prefs.putString("led_lowbatt", rgbToHex(ledColorLowBattery));
+  prefs.putString("led_won", rgbToHex(ledColorWon));
+  prefs.putString("led_lost", rgbToHex(ledColorLost));
+  prefs.putString("led_draw", rgbToHex(ledColorDraw));
+  prefs.putString("led_myturn", rgbToHex(ledColorMyTurn));
+  prefs.putString("led_oppturn", rgbToHex(ledColorOpponentTurn));
+  prefs.putUInt("led_bright_day", ledBrightnessDay);
+  prefs.putUInt("led_bright_night", ledBrightnessNight);
+
+  prefs.putUInt("result_dur_s", (unsigned int)(resultDisplayDurationMs / 1000UL));
+
   prefs.end();
 }
 
@@ -47,38 +104,90 @@ static const char *wifiQualityLabel(bool connected, int rssi) {
   return T(STR_POOR);
 }
 
+// Shared page chrome: dark-mode-aware, no external assets (everything
+// inline - this is served straight off the ESP32, no internet access
+// needed to load it, including on the setup hotspot with no WiFi at all).
+static const char PAGE_STYLE[] =
+    "<style>"
+    ":root{--bg:#f4f5f7;--card:#ffffff;--text:#1c1e21;--muted:#6b7280;--border:#e2e4e9;--accent:#2563eb;--accent-text:#ffffff;--ok:#16a34a;--warn:#d97706;}"
+    "@media (prefers-color-scheme: dark){:root{--bg:#15161a;--card:#1f2126;--text:#e7e9ea;--muted:#9aa0a8;--border:#33363d;--accent:#3b82f6;--accent-text:#ffffff;--ok:#4ade80;--warn:#fbbf24;}}"
+    "*{box-sizing:border-box;}"
+    "body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:16px;max-width:480px;margin-left:auto;margin-right:auto;}"
+    "h1{font-size:1.3rem;margin:0 0 4px;}"
+    "h2{font-size:0.95rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:22px 0 8px;}"
+    ".sub{color:var(--muted);font-size:0.85rem;margin-bottom:18px;}"
+    ".card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;}"
+    ".row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.9rem;}"
+    ".row .v{color:var(--muted);}"
+    "label{display:block;font-size:0.85rem;color:var(--muted);margin:10px 0 4px;}"
+    "input[type=text],input[type=password],input[type=number],select{width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:0.95rem;}"
+    "input[type=color]{width:100%;height:40px;padding:2px;border-radius:8px;border:1px solid var(--border);background:var(--bg);}"
+    ".colorrow{display:flex;align-items:center;gap:10px;margin:10px 0;}"
+    ".colorrow label{margin:0;flex:1;}"
+    ".colorrow input[type=color]{width:56px;height:36px;flex:none;}"
+    "small{color:var(--muted);}"
+    "button,input[type=submit]{width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent);color:var(--accent-text);font-size:1rem;font-weight:600;margin-top:18px;cursor:pointer;}"
+    "button:active,input[type=submit]:active{opacity:.85;}"
+    ".pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600;}"
+    ".pill.ok{background:rgba(22,163,74,.15);color:var(--ok);}"
+    ".pill.warn{background:rgba(217,119,6,.15);color:var(--warn);}"
+    "</style>";
+
 static void handleRoot() {
   String html = "<html><head><title>IvoChess Clock</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
-  html += "</head><body style='font-family:sans-serif;max-width:420px;margin:auto;padding:10px;'>";
-  html += "<h2>IvoChess Clock - Admin</h2>";
+  html += PAGE_STYLE;
+  html += "</head><body>";
+  html += "<h1>IvoChess Clock</h1>";
 
   if (apMode) {
-    html += "<p><strong>Mode:</strong> Setup hotspot (not on a real WiFi network yet)</p>";
+    html += "<div class='sub'>Setup hotspot <span class='pill warn'>not on a real network yet</span></div>";
   } else {
-    html += "<p><strong>WiFi:</strong> " + String(wifiSSID) + " (" + String(wifiQualityLabel(true, WiFi.RSSI())) + ")</p>";
-    html += "<p><strong>IP:</strong> " + WiFi.localIP().toString() + " (also http://" + MDNS_HOSTNAME + ".local/)</p>";
+    html += "<div class='sub'>" + String(wifiSSID) + " &middot; " + String(wifiQualityLabel(true, WiFi.RSSI())) +
+            " &middot; " + WiFi.localIP().toString() + " &middot; http://" + MDNS_HOSTNAME + ".local/</div>";
   }
 
   html += "<form method='POST' action='/save'>";
 
-  html += "<h3>WiFi network</h3>";
-  html += "SSID: <input type='text' name='ssid' value='" + String(wifiSSID) + "' style='width:100%'><br><br>";
-  html += "Password: <input type='password' name='pass' placeholder='(leave empty to keep current)' style='width:100%'><br>";
+  html += "<h2>WiFi</h2><div class='card'>";
+  html += "<label>Network name (SSID)</label><input type='text' name='ssid' value='" + String(wifiSSID) + "'>";
+  html += "<label>Password</label><input type='password' name='pass' placeholder='(leave empty to keep current)'>";
+  html += "</div>";
 
-  html += "<h3>Language</h3>";
-  html += "<select name='lang' style='width:100%'>";
+  html += "<h2>Chess.com account</h2><div class='card'>";
+  html += "<label>PHPSESSID cookie</label><input type='password' name='phpsessid' placeholder='(leave empty to keep current)'>";
+  html += "<label>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
+  html += "<small>Used to always show you in the bottom row (opponent on top) and to tell win/loss apart.</small>";
+  html += "</div>";
+
+  html += "<h2>Display</h2><div class='card'>";
+  html += "<label>Language</label><select name='lang'>";
   html += "<option value='0'"; html += (currentLanguage == LANG_EN ? " selected" : ""); html += ">English</option>";
   html += "<option value='1'"; html += (currentLanguage == LANG_PT ? " selected" : ""); html += ">Portugues</option>";
   html += "</select>";
+  html += "<label>Result screen duration (seconds)</label><input type='number' name='resultdur' min='3' max='120' value='" +
+          String(resultDisplayDurationMs / 1000UL) + "'>";
+  html += "</div>";
 
-  html += "<h3>Connection</h3>";
-  html += "<select name='datasrc' style='width:100%'>";
-  html += "<option value='0' selected>Chess.com</option>";
-  html += "</select><br><br>";
-  html += "PHPSESSID: <input type='password' name='phpsessid' placeholder='(leave empty to keep current)' style='width:100%'><br>";
+  html += "<h2>Data source</h2><div class='card'>";
+  html += "<select name='datasrc'><option value='0' selected>Chess.com (live, over WiFi)</option></select>";
+  html += "<small>ChessConnect/DGT3000 over Bluetooth isn't implemented yet.</small>";
+  html += "</div>";
 
-  html += "<br><input type='submit' value='Save and restart' style='width:100%;padding:10px;'>";
+  html += "<h2>LED colors</h2><div class='card'>";
+  html += "<div class='colorrow'><label>No WiFi</label><input type='color' name='led_nowifi' value='" + rgbToHex(ledColorNoWifi) + "'></div>";
+  html += "<div class='colorrow'><label>Low battery (blinks)</label><input type='color' name='led_lowbatt' value='" + rgbToHex(ledColorLowBattery) + "'></div>";
+  html += "<div class='colorrow'><label>Your turn</label><input type='color' name='led_myturn' value='" + rgbToHex(ledColorMyTurn) + "'></div>";
+  html += "<div class='colorrow'><label>Opponent's turn</label><input type='color' name='led_oppturn' value='" + rgbToHex(ledColorOpponentTurn) + "'></div>";
+  html += "<div class='colorrow'><label>You won</label><input type='color' name='led_won' value='" + rgbToHex(ledColorWon) + "'></div>";
+  html += "<div class='colorrow'><label>You lost</label><input type='color' name='led_lost' value='" + rgbToHex(ledColorLost) + "'></div>";
+  html += "<div class='colorrow'><label>Draw / unknown</label><input type='color' name='led_draw' value='" + rgbToHex(ledColorDraw) + "'></div>";
+  html += "<label>Brightness - day (0-255)</label><input type='number' name='led_bright_day' min='0' max='255' value='" + String(ledBrightnessDay) + "'>";
+  html += "<label>Brightness - night (0-255)</label><input type='number' name='led_bright_night' min='0' max='255' value='" + String(ledBrightnessNight) + "'>";
+  html += "<small>Night mode: " + String(NIGHT_MODE_START_HOUR) + ":00-" + String(NIGHT_MODE_END_HOUR) + ":00 (set in config.h).</small>";
+  html += "</div>";
+
+  html += "<input type='submit' value='Save'>";
   html += "</form>";
   html += "</body></html>";
 
@@ -86,14 +195,21 @@ static void handleRoot() {
 }
 
 static void handleSave() {
-  if (server.hasArg("ssid")) {
+  bool wifiChanged = false;
+
+  if (server.hasArg("ssid") && server.arg("ssid") != String(wifiSSID)) {
     server.arg("ssid").toCharArray(wifiSSID, sizeof(wifiSSID));
+    wifiChanged = true;
   }
   if (server.hasArg("pass") && server.arg("pass").length() > 0) {
     server.arg("pass").toCharArray(wifiPassword, sizeof(wifiPassword));
+    wifiChanged = true;
   }
   if (server.hasArg("phpsessid") && server.arg("phpsessid").length() > 0) {
     server.arg("phpsessid").toCharArray(phpsessid, sizeof(phpsessid));
+  }
+  if (server.hasArg("myusername")) {
+    server.arg("myusername").toCharArray(myUsername, sizeof(myUsername));
   }
   if (server.hasArg("lang")) {
     currentLanguage = (Language)server.arg("lang").toInt();
@@ -101,12 +217,39 @@ static void handleSave() {
   if (server.hasArg("datasrc")) {
     currentDataSource = (DataSourceType)server.arg("datasrc").toInt();
   }
+  if (server.hasArg("resultdur")) {
+    long secs = server.arg("resultdur").toInt();
+    if (secs < 1) secs = 1;
+    resultDisplayDurationMs = (unsigned long)secs * 1000UL;
+  }
+
+  if (server.hasArg("led_nowifi")) hexToRgb(server.arg("led_nowifi"), ledColorNoWifi);
+  if (server.hasArg("led_lowbatt")) hexToRgb(server.arg("led_lowbatt"), ledColorLowBattery);
+  if (server.hasArg("led_won")) hexToRgb(server.arg("led_won"), ledColorWon);
+  if (server.hasArg("led_lost")) hexToRgb(server.arg("led_lost"), ledColorLost);
+  if (server.hasArg("led_draw")) hexToRgb(server.arg("led_draw"), ledColorDraw);
+  if (server.hasArg("led_myturn")) hexToRgb(server.arg("led_myturn"), ledColorMyTurn);
+  if (server.hasArg("led_oppturn")) hexToRgb(server.arg("led_oppturn"), ledColorOpponentTurn);
+  if (server.hasArg("led_bright_day")) ledBrightnessDay = (uint8_t)constrain(server.arg("led_bright_day").toInt(), 0, 255);
+  if (server.hasArg("led_bright_night")) ledBrightnessNight = (uint8_t)constrain(server.arg("led_bright_night").toInt(), 0, 255);
 
   saveConfig();
 
-  server.send(200, "text/html", "<html><body><h3>Saved. Restarting...</h3></body></html>");
-  delay(1000);
-  ESP.restart();  // simplest and most reliable way to apply new WiFi/config
+  if (wifiChanged) {
+    // Only a WiFi network/password change actually needs a reboot (to
+    // re-run WiFi.begin() cleanly) - everything else (LED colors,
+    // username, phpsessid, language, result duration) already took
+    // effect in the running globals above, no restart needed. This
+    // matters because a restart tears down any in-progress live game
+    // connection for no reason.
+    server.send(200, "text/html", "<html><body><h3>Saved. Restarting to apply new WiFi settings...</h3></body></html>");
+    delay(1000);
+    ESP.restart();
+  } else {
+    server.send(200, "text/html",
+                "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+                "<body><h3>Saved.</h3></body></html>");
+  }
 }
 
 static void startApMode() {

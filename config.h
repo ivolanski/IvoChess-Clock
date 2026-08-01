@@ -56,8 +56,9 @@
 #define RSOCKET_LIFETIME_MS 90000
 
 // How long the "game over" result stays on screen before returning to
-// the waiting/status screen.
-#define RESULT_DISPLAY_DURATION_MS (15UL * 1000UL)
+// the waiting/status screen. DEFAULT only - configurable in the admin
+// portal from then on (AdminPortal.cpp resultDisplayDurationMs).
+#define DEFAULT_RESULT_DISPLAY_DURATION_SEC 15
 
 // While a game is live: how often to redraw the clocks (unless a new
 // move happens first, which also triggers an immediate redraw and
@@ -74,37 +75,25 @@
 #define ADMIN_PORT 80
 
 // ---------------------------------------------------------------------------
-// LEDs (WS2812/NeoPixel)
+// LEDs (WS2812/NeoPixel) - all 8 LEDs always show the same color together
+// (the case diffuses the light, individual LEDs aren't visible - see
+// LedFunctions.cpp). Colors/brightness below are only the DEFAULTS seeded
+// into Preferences the first time; from then on the admin portal's saved
+// values (AdminPortal.cpp ledColor*/ledBrightness*) are what's actually
+// used - edit them there, not here, once the device has booted once.
 // ---------------------------------------------------------------------------
 #define LED_COUNT 8
 #define LED_DATA_PIN LED_PIN
-#define LED_BRIGHTNESS 100
-#define LED_BRIGHTNESS_NIGHT 20
+#define DEFAULT_LED_BRIGHTNESS 100
+#define DEFAULT_LED_BRIGHTNESS_NIGHT 20
 
-#define COLOR_GREEN_R     0
-#define COLOR_GREEN_G     255
-#define COLOR_GREEN_B     0
-#define COLOR_RED_R       255
-#define COLOR_RED_G       0
-#define COLOR_RED_B       0
-#define COLOR_YELLOW_R    255
-#define COLOR_YELLOW_G    255
-#define COLOR_YELLOW_B    0
-#define COLOR_CYAN_R      0
-#define COLOR_CYAN_G      128
-#define COLOR_CYAN_B      255
-#define COLOR_PINK_R      255    // used for loss
-#define COLOR_PINK_G      20
-#define COLOR_PINK_B      147
-#define COLOR_ORANGE_R    255
-#define COLOR_ORANGE_G    128
-#define COLOR_ORANGE_B    0
-#define COLOR_BLUE_R      0
-#define COLOR_BLUE_G      0
-#define COLOR_BLUE_B      255
-#define COLOR_WHITE_R     255
-#define COLOR_WHITE_G     255
-#define COLOR_WHITE_B     255
+#define DEFAULT_LED_NO_WIFI        "#0000ff"  // blue
+#define DEFAULT_LED_LOW_BATTERY    "#ff8000"  // orange
+#define DEFAULT_LED_WON            "#00ff00"  // green
+#define DEFAULT_LED_LOST           "#ff1493"  // pink
+#define DEFAULT_LED_DRAW           "#ffffff"  // white - also used for "who's on move" when that's not known yet
+#define DEFAULT_LED_MY_TURN        "#0080ff"  // cyan
+#define DEFAULT_LED_OPPONENT_TURN  "#ffff00"  // yellow
 
 // ---------------------------------------------------------------------------
 // BATTERY

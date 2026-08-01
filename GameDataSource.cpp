@@ -69,6 +69,9 @@ static bool updateFromChessComWiFi(ClockState &state) {
       // clockMs, moveCount, activePlayerIndex, clockBaseline* intentionally left alone.
     }
   } else {
+    Serial.printf("[GameDataSource] New game found: %s(%d) vs %s(%d) - id=%s\n",
+                  currentGame.players[0].username, currentGame.players[0].rating,
+                  currentGame.players[1].username, currentGame.players[1].rating, currentGame.id);
     state.players[0] = currentGame.players[0];
     state.players[1] = currentGame.players[1];
     state.moveCount = 0;
@@ -76,6 +79,18 @@ static bool updateFromChessComWiFi(ClockState &state) {
     state.clockBaselineMs[0] = currentGame.players[0].clockMs;
     state.clockBaselineMs[1] = currentGame.players[1].clockMs;
     state.clockBaselineAtMs = now;
+
+    // Defensive: a new game starting always takes display priority over
+    // any still-counting-down result screen anyway (see
+    // DisplayFunctions.cpp updateDisplay() - hasGame wins), but clear the
+    // old result explicitly too so there's no leftover state from a
+    // previous game if this ever gets refactored. Matters most for fast
+    // back-to-back games (opponent aborts, you immediately start
+    // another) - each game-over event already overwrites all of this
+    // fresh (LiveGameClient.cpp), so this only guards the in-between gap.
+    state.resultDisplayUntilMs = 0;
+    state.lastResultSummary[0] = '\0';
+    state.lastGameOutcome = OUTCOME_NONE;
   }
 
   liveWasConnected = false;

@@ -1,6 +1,7 @@
 #include "DisplayFunctions.h"
 #include "config.h"
 #include "Translations.h"
+#include "AdminPortal.h"
 
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
@@ -186,11 +187,60 @@ static void drawWaitingStatusContent(const ClockState &state) {
   y += lineHeight;
 
   display.setCursor(5, y);
-  if (strlen(state.lastResultSummary) > 0) {
-    display.print(state.lastResultSummary);
-  } else {
-    display.print(T(STR_WAITING_FOR_GAME));
+  display.print(T(STR_WAITING_FOR_GAME));
+}
+
+// Dedicated "game over" screen - shown for resultDisplayDurationMs
+// (admin-portal configurable) instead of squeezing the result into the
+// regular status screen's last line, per how prominent an outcome
+// deserves to be. Falls back to the neutral compact summary
+// (LiveGameClient.cpp's lastResultSummary) when myUsername isn't
+// configured and win/loss couldn't be resolved.
+static void drawResultContent(const ClockState &state) {
+  const char *headline = nullptr;
+  if (state.lastGameOutcome == OUTCOME_WIN) headline = T(STR_YOU_WON);
+  else if (state.lastGameOutcome == OUTCOME_LOSS) headline = T(STR_YOU_LOST);
+  else if (state.lastGameOutcome == OUTCOME_DRAW) headline = T(STR_DRAW);
+
+  if (headline == nullptr) {
+    display.setFont(&FreeMonoBold9pt7b);
+    printCentered(T(STR_LAST_RESULT), 35);
+    printCentered(state.lastResultSummary, 60);
+    return;
   }
+
+  display.setFont(&FreeMonoBold18pt7b);
+  printCentered(headline, 42);
+
+  display.setFont(&FreeMonoBold9pt7b);
+  if (state.lastResultReason[0] != '\0') {
+    char reasonLine[48];
+    snprintf(reasonLine, sizeof(reasonLine), "(%s)", state.lastResultReason);
+    printCentered(reasonLine, 64);
+  }
+  if (state.lastOpponentUsername[0] != '\0') {
+    char vsLine[48];
+    snprintf(vsLine, sizeof(vsLine), "vs %s", state.lastOpponentUsername);
+    printCentered(vsLine, 84);
+  }
+  if (state.lastRatingKnown) {
+    char ratingLine[24];
+    snprintf(ratingLine, sizeof(ratingLine), "%+d", state.lastRatingDelta);
+    printCentered(ratingLine, 106);
+  }
+}
+
+// Which of state.players[0]/[1] is "me" (matches myUsername), so we can
+// always draw ourselves in the bottom row and the opponent on top - like
+// sitting across a real board. -1 if myUsername isn't set or doesn't
+// match either player (falls back to chess.com's own order: [0] top,
+// [1] bottom, same as before this existed).
+static int myPlayerIndex(const ClockState &state) {
+  if (myUsername[0] == '\0') return -1;
+  for (int i = 0; i < 2; i++) {
+    if (strcasecmp(state.players[i].username, myUsername) == 0) return i;
+  }
+  return -1;
 }
 
 // Game screen: always shown while a game is active, never alternates
@@ -204,8 +254,12 @@ static void drawGameContent(const ClockState &state) {
   display.setCursor(5, 12);
   display.print(header);
 
-  drawPlayerLine(45, state.players[0], state.activePlayerIndex == 0);
-  drawPlayerLine(90, state.players[1], state.activePlayerIndex == 1);
+  int bottomIndex = myPlayerIndex(state);
+  if (bottomIndex == -1) bottomIndex = 1;  // unknown - keep the pre-existing order
+  int topIndex = 1 - bottomIndex;
+
+  drawPlayerLine(45, state.players[topIndex], state.activePlayerIndex == topIndex);
+  drawPlayerLine(90, state.players[bottomIndex], state.activePlayerIndex == bottomIndex);
 }
 
 // Redraws ONLY the two clock boxes, using a REAL partial window
@@ -246,8 +300,9 @@ void updateDisplay(bool fullRefresh, const ClockState &state) {
   } else if (state.apMode) {
     drawSetupModeContent(state);
   } else if (showingResult) {
-    // Result screen has priority over the logo for its 15s window.
-    drawWaitingStatusContent(state);
+    // Dedicated result screen has priority over the logo for its
+    // (admin-portal configurable) window.
+    drawResultContent(state);
   } else if (isLogoPhase()) {
     drawLogoContent();
   } else {

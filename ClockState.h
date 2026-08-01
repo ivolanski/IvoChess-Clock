@@ -11,6 +11,18 @@ struct PlayerInfo {
   long clockMs;
 };
 
+// How the last-finished game ended, FROM OUR OWN ACCOUNT'S POINT OF VIEW
+// (needs myUsername configured in the admin portal to resolve WIN/LOSS -
+// falls back to DRAW/NONE-only reporting otherwise). Computed once in
+// LiveGameClient.cpp when the game-over RSocket event arrives, so
+// LedFunctions.cpp/DisplayFunctions.cpp don't have to re-parse text.
+enum GameOutcome {
+  OUTCOME_NONE = 0,  // no result to show right now
+  OUTCOME_WIN,
+  OUTCOME_LOSS,
+  OUTCOME_DRAW,
+};
+
 struct ClockState {
   // --- network ---
   bool wifiConnected;
@@ -33,7 +45,12 @@ struct ClockState {
   PlayerInfo players[2];
   int moveCount;
   int activePlayerIndex;
-  char lastResultSummary[128];
+  char lastResultSummary[128];   // compact one-line form, e.g. for logs/fallback rendering
+  GameOutcome lastGameOutcome;
+  char lastResultReason[40];     // chess.com's raw per-player reason string: "resigned", "checkmated", "agreed", "timeout"...
+  int lastRatingDelta;           // my rating change, only meaningful if lastRatingKnown
+  bool lastRatingKnown;          // false when myUsername wasn't configured/matched - don't show a rating delta of 0 as if it were real
+  char lastOpponentUsername[USERNAME_MAX_LEN];
   unsigned long resultDisplayUntilMs;  // 0 = not showing a result right now; else millis() timestamp until which the result screen stays up
 
   // Anchor for local clock extrapolation between RSocket updates: the

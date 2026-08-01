@@ -21,6 +21,9 @@ enum StringId {
   STR_POOR,
   STR_GOOD,
   STR_EXCELLENT,
+  STR_YOU_WON,
+  STR_YOU_LOST,
+  STR_DRAW,
   STR_COUNT  // always last - marks the size of the tables
 };
 

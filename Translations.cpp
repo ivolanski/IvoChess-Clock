@@ -17,6 +17,9 @@ static const char *STRINGS_EN[STR_COUNT] = {
   "Poor",
   "Good",
   "Excellent",
+  "You WON",
+  "You LOST",
+  "Draw",
 };
 
 static const char *STRINGS_PT[STR_COUNT] = {
@@ -34,6 +37,9 @@ static const char *STRINGS_PT[STR_COUNT] = {
   "Fraco",
   "Bom",
   "Excelente",
+  "Voce VENCEU",
+  "Voce PERDEU",
+  "Empate",
 };
 
 const char *T(StringId id) {

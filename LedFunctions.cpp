@@ -1,5 +1,6 @@
 #include "LedFunctions.h"
 #include "config.h"
+#include "AdminPortal.h"
 #include "TimeFunctions.h"
 
 #include <Adafruit_NeoPixel.h>
@@ -8,7 +9,7 @@ static Adafruit_NeoPixel strip(LED_COUNT, LED_DATA_PIN, NEO_GRB + NEO_KHZ800);
 
 void initLEDs() {
   strip.begin();
-  strip.setBrightness(LED_BRIGHTNESS);
+  strip.setBrightness(ledBrightnessDay);
   strip.clear();
   strip.show();
 }
@@ -24,41 +25,64 @@ void clearLEDs() {
   setAllLEDs(0, 0, 0);
 }
 
+// Which of state.players[0]/[1] is "me" - same match DisplayFunctions.cpp
+// uses to decide who goes in the bottom row, so the "your turn" LED color
+// lines up with what's actually shown on screen instead of being tied to
+// chess.com's raw (arbitrary) player order.
+static int myPlayerIndex(const ClockState &state) {
+  if (myUsername[0] == '\0') return -1;
+  for (int i = 0; i < 2; i++) {
+    if (strcasecmp(state.players[i].username, myUsername) == 0) return i;
+  }
+  return -1;
+}
+
 // The case diffuses the light (individual LEDs aren't visible) - that's
-// why the WHOLE case changes color, instead of splitting the strip.
+// why the WHOLE strip changes color together, instead of splitting it
+// per-player or per-pixel.
 void updateLEDs(const ClockState &state) {
-  strip.setBrightness(isNightTime() ? LED_BRIGHTNESS_NIGHT : LED_BRIGHTNESS);
+  strip.setBrightness(isNightTime() ? ledBrightnessNight : ledBrightnessDay);
 
   if (!state.wifiConnected) {
-    setAllLEDs(COLOR_BLUE_R, COLOR_BLUE_G, COLOR_BLUE_B);
+    setAllLEDs(ledColorNoWifi[0], ledColorNoWifi[1], ledColorNoWifi[2]);
     return;
+  }
+
+  // Figure out the "true" state color first, then only LAYER the
+  // low-battery warning on top as a blink (alternating with the true
+  // color) instead of fully replacing it - otherwise a low battery during
+  // an active game would hide whose turn it is, which matters more.
+  uint8_t baseColor[3];
+
+  if (state.hasGame) {
+    int meIdx = myPlayerIndex(state);
+    if (state.activePlayerIndex == -1) {
+      memcpy(baseColor, ledColorDraw, 3);  // whose turn isn't known yet - neutral color
+    } else if (meIdx != -1) {
+      memcpy(baseColor, (state.activePlayerIndex == meIdx) ? ledColorMyTurn : ledColorOpponentTurn, 3);
+    } else {
+      // myUsername isn't configured - fall back to raw index so there's
+      // still a turn indicator, just not tied to "me" specifically.
+      memcpy(baseColor, (state.activePlayerIndex == 0) ? ledColorMyTurn : ledColorOpponentTurn, 3);
+    }
+  } else {
+    switch (state.lastGameOutcome) {
+      case OUTCOME_WIN:  memcpy(baseColor, ledColorWon, 3); break;
+      case OUTCOME_LOSS: memcpy(baseColor, ledColorLost, 3); break;
+      case OUTCOME_DRAW: memcpy(baseColor, ledColorDraw, 3); break;
+      case OUTCOME_NONE:
+      default: baseColor[0] = baseColor[1] = baseColor[2] = 0; break;  // idle - off
+    }
   }
 
   if (state.batteryPercentage > 0 && state.batteryPercentage < 15) {
     static bool blinkOn = false;
     blinkOn = !blinkOn;
     if (blinkOn) {
-      setAllLEDs(COLOR_ORANGE_R, COLOR_ORANGE_G, COLOR_ORANGE_B);
+      setAllLEDs(ledColorLowBattery[0], ledColorLowBattery[1], ledColorLowBattery[2]);
       return;
     }
   }
 
-  if (!state.hasGame) {
-    if (strstr(state.lastResultSummary, "WON") != nullptr) {
-      setAllLEDs(COLOR_GREEN_R, COLOR_GREEN_G, COLOR_GREEN_B);
-    } else if (strstr(state.lastResultSummary, "LOST") != nullptr) {
-      setAllLEDs(COLOR_PINK_R, COLOR_PINK_G, COLOR_PINK_B);
-    } else {
-      clearLEDs();
-    }
-    return;
-  }
-
-  if (state.activePlayerIndex == 0) {
-    setAllLEDs(COLOR_CYAN_R, COLOR_CYAN_G, COLOR_CYAN_B);
-  } else if (state.activePlayerIndex == 1) {
-    setAllLEDs(COLOR_YELLOW_R, COLOR_YELLOW_G, COLOR_YELLOW_B);
-  } else {
-    setAllLEDs(COLOR_WHITE_R, COLOR_WHITE_G, COLOR_WHITE_B);
-  }
+  setAllLEDs(baseColor[0], baseColor[1], baseColor[2]);
 }

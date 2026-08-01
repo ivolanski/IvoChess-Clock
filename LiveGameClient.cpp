@@ -2,6 +2,7 @@
 #include "config.h"
 #include "AdminPortal.h"
 #include "RSocketCodec.h"
+#include "Translations.h"
 
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
@@ -113,21 +114,81 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     JsonArray results = doc["results"];
     JsonArray ratings = doc["ratings"];
 
-    char summary[128];
-    int pos = 0;
-    for (int i = 0; i < 2; i++) {
-      const char *reason = (i < (int)results.size()) ? (const char *)results[i] : "?";
-      int ratingNew = 0, ratingDelta = 0;
-      if (i < (int)ratings.size()) {
-        JsonArray pair = ratings[i];
-        ratingNew = pair[0] | 0;
-        ratingDelta = pair[1] | 0;
+    int winnerIdx = -1;
+    for (int i = 0; i < (int)results.size() && i < 2; i++) {
+      if (strcmp((const char *)results[i], "win") == 0) winnerIdx = i;
+    }
+
+    int meIdx = -1;
+    if (myUsername[0] != '\0') {
+      for (int i = 0; i < 2; i++) {
+        if (strcasecmp(g_state->players[i].username, myUsername) == 0) {
+          meIdx = i;
+          break;
+        }
       }
-      int written = snprintf(summary + pos, sizeof(summary) - pos, "%s%s: %s [%d %+d]",
-                              (i == 0) ? "" : " | ", g_state->players[i].username, reason, ratingNew, ratingDelta);
-      if (written < 0) break;
-      pos += written;
-      if (pos >= (int)sizeof(summary)) break;
+    }
+
+    GameOutcome outcome = OUTCOME_NONE;
+    if (winnerIdx == -1) {
+      outcome = OUTCOME_DRAW;
+    } else if (meIdx != -1) {
+      outcome = (winnerIdx == meIdx) ? OUTCOME_WIN : OUTCOME_LOSS;
+    }
+    // else: myUsername isn't configured, so win/loss can't be resolved -
+    // stays OUTCOME_NONE (LedFunctions.cpp treats that as "idle/off"),
+    // and the summary text below falls back to the neutral per-player form.
+    g_state->lastGameOutcome = outcome;
+
+    // Reason: chess.com gives one string per player ("resigned",
+    // "checkmated", "timeout", "agreed", "repetition"...) - the LOSING
+    // side's is the actual cause of a decisive game; for a draw both
+    // sides normally carry the same word (e.g. "agreed"/"agreed").
+    int reasonIdx = (winnerIdx == -1) ? 0 : (1 - winnerIdx);
+    const char *reason = (reasonIdx < (int)results.size()) ? (const char *)results[reasonIdx] : "?";
+    strncpy(g_state->lastResultReason, reason, sizeof(g_state->lastResultReason) - 1);
+    g_state->lastResultReason[sizeof(g_state->lastResultReason) - 1] = '\0';
+
+    int opponentIdx = (meIdx == -1) ? -1 : (1 - meIdx);
+    if (opponentIdx != -1) {
+      strncpy(g_state->lastOpponentUsername, g_state->players[opponentIdx].username, sizeof(g_state->lastOpponentUsername) - 1);
+      g_state->lastOpponentUsername[sizeof(g_state->lastOpponentUsername) - 1] = '\0';
+    } else {
+      g_state->lastOpponentUsername[0] = '\0';
+    }
+
+    g_state->lastRatingKnown = (meIdx != -1 && meIdx < (int)ratings.size());
+    g_state->lastRatingDelta = 0;
+    if (g_state->lastRatingKnown) {
+      JsonArray pair = ratings[meIdx];
+      g_state->lastRatingDelta = pair[1] | 0;
+    }
+
+    char summary[128];
+    if (outcome != OUTCOME_NONE) {
+      const char *headline = (outcome == OUTCOME_WIN) ? T(STR_YOU_WON) : (outcome == OUTCOME_LOSS) ? T(STR_YOU_LOST) : T(STR_DRAW);
+      if (g_state->lastRatingKnown) {
+        snprintf(summary, sizeof(summary), "%s (%s) [%+d]", headline, reason, g_state->lastRatingDelta);
+      } else {
+        snprintf(summary, sizeof(summary), "%s (%s)", headline, reason);
+      }
+    } else {
+      // Fallback (myUsername not configured): neutral "name: reason [rating]" per player.
+      int pos = 0;
+      for (int i = 0; i < 2; i++) {
+        const char *r = (i < (int)results.size()) ? (const char *)results[i] : "?";
+        int ratingNew = 0, ratingDelta = 0;
+        if (i < (int)ratings.size()) {
+          JsonArray pair = ratings[i];
+          ratingNew = pair[0] | 0;
+          ratingDelta = pair[1] | 0;
+        }
+        int written = snprintf(summary + pos, sizeof(summary) - pos, "%s%s: %s [%d %+d]",
+                                (i == 0) ? "" : " | ", g_state->players[i].username, r, ratingNew, ratingDelta);
+        if (written < 0) break;
+        pos += written;
+        if (pos >= (int)sizeof(summary)) break;
+      }
     }
 
     Serial.printf("[LiveGame] Game finished: %s\n", summary);
@@ -135,7 +196,7 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     strncpy(g_state->lastResultSummary, summary, sizeof(g_state->lastResultSummary) - 1);
     g_state->lastResultSummary[sizeof(g_state->lastResultSummary) - 1] = '\0';
     g_state->hasGame = false;
-    g_state->resultDisplayUntilMs = millis() + RESULT_DISPLAY_DURATION_MS;
+    g_state->resultDisplayUntilMs = millis() + resultDisplayDurationMs;
 
     liveGameDisconnect();
     return;
