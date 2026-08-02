@@ -348,6 +348,17 @@ void initAdminPortal(ClockState *statePtr) {
     startApMode();
   }
 
+  // WebServer's authenticate() only sees the Authorization header once the
+  // library's internal header-collection list has been set up
+  // (collectHeaders()/collectAllHeaders()) - without this, it silently
+  // stays unset until something else happens to trigger it (observed on
+  // real hardware: right after a fresh boot, authenticate() rejected the
+  // CORRECT credentials every time - it wasn't even seeing the header to
+  // compare against). Registering it explicitly here means login works
+  // from the very first request, not just "eventually".
+  static const char *kAuthHeaders[] = {"Authorization"};
+  server.collectHeaders(kAuthHeaders, 1);
+
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.onNotFound(handleRoot);  // any unknown URL falls back here - helps the phone "find" the captive portal

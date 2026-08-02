@@ -3,10 +3,17 @@
 #include "Translations.h"
 #include "AdminPortal.h"
 
+#include <ctype.h>
+
 #include <GxEPD2_BW.h>
 #include <Fonts/FreeMonoBold9pt7b.h>
 #include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMonoBold18pt7b.h>
+
+// The site doesn't exist yet (per the user: "e mais tipo uma propaganda
+// mesmo" - it's advertising for a future site), so this is static text
+// everywhere it's used, not a working link.
+#define SITE_URL "ivochess.ivolanski.com"
 
 GxEPD2_BW<GxEPD2_213_B74, GxEPD2_213_B74::HEIGHT> display(
     GxEPD2_213_B74(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
@@ -18,15 +25,8 @@ void initDisplay() {
   Serial.println("[Display] Initialized (GxEPD2_213_B74).");
 }
 
-static void drawLogoContent() {
-  display.setFont(&FreeMonoBold12pt7b);
-  const char *text = T(STR_APP_NAME);
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-  display.setCursor((SCREEN_WIDTH - w) / 2, (SCREEN_HEIGHT + h) / 2 - 5);
-  display.print(text);
-}
+// Defined further down (needs printCentered(), declared below).
+static void drawLogoContent();
 
 void drawStartupScreen() {
   display.setFullWindow();
@@ -55,18 +55,75 @@ static void printCentered(const char *text, int y) {
   display.print(text);
 }
 
-// Like printCentered(), but wraps to a second centered line (at y +
-// lineHeight) if the text doesn't fit maxWidth on one line - splits at
-// the space closest to the middle of the string, so both halves come
-// out reasonably balanced instead of one long line + one short one.
-// Only wraps once (2 lines total) - plenty for the short status phrases
-// this is used for; not a general paragraph-wrapping engine.
-static void printCenteredWrapped(const char *text, int y, int lineHeight, int maxWidth) {
+// Row of alternating filled/empty squares, like a strip cut from a chess
+// board - purely decorative, themes the burn-in screen without needing
+// any image asset (a bitmap would cost flash and a conversion step; this
+// is just fillRect calls). Centered horizontally.
+#define LOGO_SQUARE 16
+#define LOGO_SQUARES 8
+static void drawChessStrip(int yTop) {
+  int totalW = LOGO_SQUARE * LOGO_SQUARES;
+  int xStart = (SCREEN_WIDTH - totalW) / 2;
+  for (int i = 0; i < LOGO_SQUARES; i++) {
+    if (i % 2 == 0) {
+      display.fillRect(xStart + i * LOGO_SQUARE, yTop, LOGO_SQUARE, LOGO_SQUARE, GxEPD_BLACK);
+    }
+  }
+}
+
+// Burn-in-avoidance screen - alternates with the status screen while
+// idle (see isLogoPhase()). Deliberately laid out to NOT reuse the
+// waiting screen's pixel positions (chess-strip decoration instead of
+// status bars, a big 2-line all-caps title instead of one 12pt line,
+// different row heights throughout) so the two screens' ink doesn't
+// keep landing on the same pixels over thousands of cycles - some
+// overlap is unavoidable on a screen this small, but this is far more
+// different than the old single centered line was.
+static void drawLogoContent() {
+  drawChessStrip(6);
+  drawChessStrip(100);
+
+  display.setFont(&FreeMonoBold18pt7b);
+  const char *name = T(STR_APP_NAME);  // "IvoChess Clock" - same in every language
+  const char *space = strchr(name, ' ');
+  if (space != nullptr) {
+    char line1[16], line2[16];
+    size_t n1 = space - name;
+    if (n1 >= sizeof(line1)) n1 = sizeof(line1) - 1;
+    for (size_t i = 0; i < n1; i++) line1[i] = toupper((unsigned char)name[i]);
+    line1[n1] = '\0';
+
+    size_t n2 = strlen(space + 1);
+    if (n2 >= sizeof(line2)) n2 = sizeof(line2) - 1;
+    for (size_t i = 0; i < n2; i++) line2[i] = toupper((unsigned char)space[1 + i]);
+    line2[n2] = '\0';
+
+    printCentered(line1, 48);
+    printCentered(line2, 76);
+  } else {
+    printCentered(name, 62);
+  }
+
+  display.setFont(&FreeMonoBold9pt7b);
+  printCentered(SITE_URL, 92);
+}
+
+// Like printCentered(), but (a) vertically centers within [topY, bottomY]
+// - using the real measured glyph height (getTextBounds), not a guessed
+// baseline - rather than printing at a fixed y, and (b) wraps to a second
+// centered line if the text doesn't fit maxWidth on one line, splitting
+// at the space closest to the middle of the string so both halves come
+// out reasonably balanced. Only wraps once (2 lines total) - plenty for
+// the short status phrases this is used for; not a general
+// paragraph-wrapping engine.
+static void printCenteredWrapped(const char *text, int topY, int bottomY, int lineHeight, int maxWidth) {
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+
   if (w <= (uint16_t)maxWidth) {
-    printCentered(text, y);
+    int baseline = (topY + bottomY) / 2 - y1 - (int)h / 2;
+    printCentered(text, baseline);
     return;
   }
 
@@ -87,7 +144,8 @@ static void printCenteredWrapped(const char *text, int y, int lineHeight, int ma
   if (splitAt < 0) {
     // No space to break at (single long word) - print as-is rather than
     // fabricate a mid-word break.
-    printCentered(text, y);
+    int baseline = (topY + bottomY) / 2 - y1 - (int)h / 2;
+    printCentered(text, baseline);
     return;
   }
 
@@ -98,8 +156,10 @@ static void printCenteredWrapped(const char *text, int y, int lineHeight, int ma
   strncpy(line2, text + splitAt + 1, sizeof(line2) - 1);  // +1 skips the space itself
   line2[sizeof(line2) - 1] = '\0';
 
-  printCentered(line1, y);
-  printCentered(line2, y + lineHeight);
+  int blockHeight = lineHeight + (int)h;
+  int baseline1 = (topY + bottomY) / 2 - blockHeight / 2 - y1;
+  printCentered(line1, baseline1);
+  printCentered(line2, baseline1 + lineHeight);
 }
 
 // ---- top status bar: WiFi name+signal (left), battery bars (right) ----
@@ -193,24 +253,56 @@ static void drawTopStatusBar(const ClockState &state) {
   display.drawFastHLine(0, STATUS_BAR_BASELINE + 5, SCREEN_WIDTH, GxEPD_BLACK);
 }
 
-// ---- shared bottom bar: site URL (left) + a right-aligned label:value ----
-// (admin IP on the waiting screen, move count on the game screen) - used
-// by both screens for a consistent look. The site doesn't exist yet
-// (per the user: "e mais tipo uma propaganda mesmo" - it's advertising
-// for a future site), so this is static text, not a working link.
-#define BOTTOM_BAR_Y 104
-#define BOTTOM_BAR_BASELINE 118
-#define SITE_URL "ivochess.ivolanski.com"
+// ---- shared bottom bar: a small right-aligned note (admin IP on the ----
+// waiting screen, move count on the game screen) just above the
+// separator line, then the footer itself is just the site URL alone on
+// its own row. The site URL (22 chars) alone is already ~97% of the
+// screen width at the smallest bold font available (FreeMonoBold9pt7b,
+// 11px/char) - it and the note CANNOT share one row at any usable size
+// without overlapping, so the note gets its own (visibly smaller) row.
+#define FOOTER_NOTE_GAP 4  // gap between the small note's bottom edge and the separator line below it
+#define BOTTOM_SEP_Y 100
+#define MESSAGE_ZONE_BOTTOM 84  // leaves room above the footer note for its height + FOOTER_NOTE_GAP
 
-static void drawBottomBar(const char *rightLabel, const char *rightValue) {
-  display.drawFastHLine(0, BOTTOM_BAR_Y, SCREEN_WIDTH, GxEPD_BLACK);
+// Small right-aligned note, using the GFX library's built-in font
+// (setFont(NULL)) rather than one of the "Free" bold fonts - deliberately
+// smaller than the site URL below it, and there's no smaller custom font
+// installed to reach for. NOTE: unlike the custom "Free" fonts used
+// everywhere else in this file, the GFX built-in font anchors text at its
+// TOP-LEFT corner, not its baseline - bottomY here is where we want the
+// text's bottom edge to land, and it's converted to a top-left cursor
+// position accordingly (getting this backwards is what made the note
+// touch the separator line below it).
+static void printSmallRightAligned(const char *text, int bottomY) {
+  display.setFont(NULL);
+  display.setTextSize(1);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  display.setCursor(SCREEN_WIDTH - (int)w - STATUS_BAR_MARGIN, bottomY - (int)h - (int)y1);
+  display.print(text);
+}
+
+static void drawBottomBar(const char *noteLabel, const char *noteValue) {
+  char note[32];
+  snprintf(note, sizeof(note), "%s%s", noteLabel, noteValue);
+  printSmallRightAligned(note, BOTTOM_SEP_Y - FOOTER_NOTE_GAP);
+
+  display.drawFastHLine(0, BOTTOM_SEP_Y, SCREEN_WIDTH, GxEPD_BLACK);
+
+  // Vertically centered in the gap between the separator and the screen's
+  // bottom edge (rather than a guessed fixed baseline), same technique as
+  // printCenteredWrapped() - measure, then center around the real glyph
+  // box instead of the nominal font size.
   display.setFont(&FreeMonoBold9pt7b);
-  display.setCursor(STATUS_BAR_MARGIN, BOTTOM_BAR_BASELINE);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(SITE_URL, 0, 0, &x1, &y1, &w, &h);
+  int zoneTop = BOTTOM_SEP_Y + 2;
+  int zoneBottom = SCREEN_HEIGHT - STATUS_BAR_MARGIN;
+  int baseline = (zoneTop + zoneBottom) / 2 - y1 - (int)h / 2;
+  display.setCursor(STATUS_BAR_MARGIN, baseline);
   display.print(SITE_URL);
-
-  char right[32];
-  snprintf(right, sizeof(right), "%s%s", rightLabel, rightValue);
-  printRightAligned(right, BOTTOM_BAR_BASELINE, STATUS_BAR_MARGIN);
 }
 
 // Short, human, ALWAYS-fits-on-one-line status headline for the middle
@@ -238,6 +330,22 @@ static void printCenteredIn(const char *text, int xLeft, int width, int y) {
   display.print(text);
 }
 
+// Like printCenteredIn(), but vertically centers within [zoneTop,
+// zoneBottom] using the real measured glyph box instead of a fixed y -
+// used for the rating line, which otherwise sits close enough to the
+// name line above it that a descender (a lowercase "y", "g", etc in the
+// username) can touch it.
+static void printCenteredInZone(const char *text, int xLeft, int width, int zoneTop, int zoneBottom) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  int x = xLeft + ((int)width - (int)w) / 2;
+  if (x < xLeft) x = xLeft;
+  int baseline = (zoneTop + zoneBottom) / 2 - y1 - (int)h / 2;
+  display.setCursor(x, baseline);
+  display.print(text);
+}
+
 // Game screen layout: a vertical divider splits the area below the top
 // bar into two halves - opponent on the LEFT, "me" on the RIGHT (per the
 // user's mockup - matches sitting across a real board with "me" nearer).
@@ -245,8 +353,13 @@ static void printCenteredIn(const char *text, int xLeft, int width, int y) {
 #define GAME_DIVIDER_X (SCREEN_WIDTH / 2)
 #define GAME_CONTENT_TOP (STATUS_BAR_BASELINE + 6)  // just below the top bar's separator line
 #define GAME_HALF_NAME_Y 34
-#define GAME_HALF_RATING_Y 50
-#define GAME_HALF_CLOCK_Y 90
+#define GAME_HALF_CLOCK_Y 84  // leaves a clear gap above the footer note row
+// Rating sits in the gap between the name and the clock, not at a fixed
+// y - GAME_NAME_BOTTOM clears the name's descenders (9pt, ~5px past its
+// baseline) and GAME_CLOCK_TOP is the 18pt clock font's own ascent (~21px
+// above its baseline), so the zone tracks both neighbors exactly.
+#define GAME_NAME_BOTTOM (GAME_HALF_NAME_Y + 5)
+#define GAME_CLOCK_TOP (GAME_HALF_CLOCK_Y - 21)
 #define GAME_HALF_MAX_CHARS 8  // conservative for a 125px half at 9pt bold mono - leaves margin so it can't crowd the divider
 
 // Solid bar at the top of a half, marking whoever is currently on the
@@ -269,7 +382,7 @@ static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool 
 
   char ratingBuf[16];
   snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
-  printCenteredIn(ratingBuf, xLeft, width, GAME_HALF_RATING_Y);
+  printCenteredInZone(ratingBuf, xLeft, width, GAME_NAME_BOTTOM, GAME_CLOCK_TOP);
 
   int minutes = player.clockMs / 60000;
   int seconds = (player.clockMs / 1000) % 60;
@@ -312,7 +425,14 @@ static void drawWaitingStatusContent(const ClockState &state) {
   printCentered(T(STR_APP_NAME), 34);
   display.drawFastHLine(0, 40, SCREEN_WIDTH, GxEPD_BLACK);
 
-  printCenteredWrapped(statusHeadline(state), 66, 22, SCREEN_WIDTH - 20);
+  // All-caps - this is the most important text on the screen, it should
+  // read that way (the font's already bold).
+  char headline[48];
+  strncpy(headline, statusHeadline(state), sizeof(headline) - 1);
+  headline[sizeof(headline) - 1] = '\0';
+  for (char *p = headline; *p; p++) *p = toupper((unsigned char)*p);
+
+  printCenteredWrapped(headline, 44, MESSAGE_ZONE_BOTTOM, 22, SCREEN_WIDTH - 20);
 
   drawBottomBar("WEBADMIN:", state.wifiConnected ? state.ipAddress : "-");
 }
@@ -377,7 +497,7 @@ static int myPlayerIndex(const ClockState &state) {
 // (site URL left, move count right) as the waiting screen's IP line.
 static void drawGameContent(const ClockState &state) {
   drawTopStatusBar(state);
-  display.drawFastVLine(GAME_DIVIDER_X, GAME_CONTENT_TOP, BOTTOM_BAR_Y - GAME_CONTENT_TOP, GxEPD_BLACK);
+  display.drawFastVLine(GAME_DIVIDER_X, GAME_CONTENT_TOP, BOTTOM_SEP_Y - GAME_CONTENT_TOP, GxEPD_BLACK);
 
   int meIndex = myPlayerIndex(state);
   int rightIndex = (meIndex == -1) ? 1 : meIndex;  // unknown - keep the pre-existing raw order
