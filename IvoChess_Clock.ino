@@ -208,7 +208,13 @@ void loop() {
     // accurate relative to the real anchor point.
     if (state.activePlayerIndex == 0 || state.activePlayerIndex == 1) {
       int idx = state.activePlayerIndex;
-      long elapsed = (long)(now - state.clockBaselineAtMs);
+      // + DISPLAY_REFRESH_LATENCY_MS: the value computed here won't
+      // actually be visible until the full refresh below finishes, so
+      // extrapolate to THAT moment, not to "now" - otherwise the clock
+      // reads a fixed ~2s behind real time the instant it's drawn (this
+      // is the only place that offset applies - a real RSocket clock
+      // value elsewhere is exact and is never adjusted like this).
+      long elapsed = (long)(now - state.clockBaselineAtMs) + DISPLAY_REFRESH_LATENCY_MS;
       long extrapolated = state.clockBaselineMs[idx] - elapsed;
       state.players[idx].clockMs = (extrapolated > 0) ? extrapolated : 0;
     }

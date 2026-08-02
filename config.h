@@ -88,6 +88,17 @@
 // does a full-screen redraw instead of a true partial one.
 #define GAME_CLOCK_REFRESH_INTERVAL_MS (10UL * 1000UL)
 
+// A full e-paper refresh isn't instant - by the time it actually finishes
+// and the new frame is visible, this much real time has already passed
+// since the value being drawn was computed. Only matters for the LOCAL
+// extrapolation fallback (IvoChess_Clock.ino, between real RSocket
+// updates) - it consistently showed ~2s behind the real clock, not
+// growing over time, which is exactly this fixed draw latency, not
+// drift. A real RSocket clock value is always exact and must be shown
+// as-is - this offset is never applied to it, only to the extrapolated
+// fallback.
+#define DISPLAY_REFRESH_LATENCY_MS 2000
+
 // ---------------------------------------------------------------------------
 // ADMIN - a SINGLE portal/server, reachable via hotspot OR the normal
 // network IP (not two separate systems). Standard HTTP port.
