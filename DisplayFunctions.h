@@ -12,10 +12,4 @@ void drawStartupScreen();
 // need to worry about that.
 void updateDisplay(bool fullRefresh, const ClockState &state);
 
-// Redraws ONLY the two clock boxes via a real partial window (no
-// full-screen flash). Use this for the once-a-second "clock is
-// ticking" case while a game is active; use updateDisplay(true, ...)
-// for anything else (new move, game start/end, phase changes).
-void updateGameClocksPartial(const ClockState &state);
-
 #endif  // DISPLAY_FUNCTIONS_H

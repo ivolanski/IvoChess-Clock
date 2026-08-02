@@ -208,10 +208,10 @@ void loop() {
       long extrapolated = state.clockBaselineMs[idx] - elapsed;
       state.players[idx].clockMs = (extrapolated > 0) ? extrapolated : 0;
     }
-    // Real partial-window refresh (updateGameClocksPartial) caused
-    // visual corruption on real hardware, so for now we just do a full
+    // A real partial-window e-paper refresh caused visual corruption in
+    // earlier testing on real hardware, so for now we just do a full
     // redraw periodically instead of every second - less "live", but
-    // reliable. See DisplayFunctions.cpp for notes on revisiting this.
+    // reliable.
     updateDisplay(/*fullRefresh=*/true, state);
     lastClockRefresh = now;
   }

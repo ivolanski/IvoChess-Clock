@@ -71,7 +71,8 @@ folder), so it won't survive a library manager update on its own.
 1. Flash the sketch. On first boot (no WiFi saved yet) it starts a
    `IvoChess-Setup` WiFi hotspot.
 2. Connect to it, open `http://192.168.4.1/` (or just wait for the captive
-   portal prompt).
+   portal prompt). It'll prompt for a login - default is `ivochess` /
+   `checkmate` (change it from the "Webadmin access" section once in).
 3. Fill in your WiFi network, your chess.com `PHPSESSID` **and**
    `CHESSCOM_REMEMBERME` cookies (both from your browser's DevTools →
    Application → Cookies, while logged into chess.com - see below for why

@@ -102,17 +102,9 @@ static void printCenteredWrapped(const char *text, int y, int lineHeight, int ma
   printCentered(line2, y + lineHeight);
 }
 
-static void drawBatteryLabel(int percentage) {
-  char batBuf[16];
-  snprintf(batBuf, sizeof(batBuf), "Batt: %d%%", percentage);
-  display.setFont(&FreeMonoBold9pt7b);
-  printRightAligned(batBuf, 12);
-}
-
 // ---- top status bar: WiFi name+signal (left), battery bars (right) ----
-// Used by the waiting/status screen only (the game screen has its own
-// compact "Batt: N%" label - drawBatteryLabel above - since it needs the
-// space for player names/clocks instead).
+// Shared by the waiting/status screen AND the game screen, for a
+// consistent look between them (per the user's mockups).
 
 // 0-4 bars, ~25% each, ceiling-rounded so any nonzero charge shows at
 // least 1 bar instead of looking dead-empty.
@@ -201,6 +193,26 @@ static void drawTopStatusBar(const ClockState &state) {
   display.drawFastHLine(0, STATUS_BAR_BASELINE + 5, SCREEN_WIDTH, GxEPD_BLACK);
 }
 
+// ---- shared bottom bar: site URL (left) + a right-aligned label:value ----
+// (admin IP on the waiting screen, move count on the game screen) - used
+// by both screens for a consistent look. The site doesn't exist yet
+// (per the user: "e mais tipo uma propaganda mesmo" - it's advertising
+// for a future site), so this is static text, not a working link.
+#define BOTTOM_BAR_Y 104
+#define BOTTOM_BAR_BASELINE 118
+#define SITE_URL "ivochess.ivolanski.com"
+
+static void drawBottomBar(const char *rightLabel, const char *rightValue) {
+  display.drawFastHLine(0, BOTTOM_BAR_Y, SCREEN_WIDTH, GxEPD_BLACK);
+  display.setFont(&FreeMonoBold9pt7b);
+  display.setCursor(STATUS_BAR_MARGIN, BOTTOM_BAR_BASELINE);
+  display.print(SITE_URL);
+
+  char right[32];
+  snprintf(right, sizeof(right), "%s%s", rightLabel, rightValue);
+  printRightAligned(right, BOTTOM_BAR_BASELINE, STATUS_BAR_MARGIN);
+}
+
 // Short, human, ALWAYS-fits-on-one-line status headline for the middle
 // of the waiting screen - deliberately not the raw apiStatus text (which
 // can be a long technical string like "HTTP 403 (session expired -
@@ -213,75 +225,58 @@ static const char *statusHeadline(const ClockState &state) {
   return T(STR_CONNECTION_ERROR);
 }
 
-// Fixed box reserved for each clock's text (right-aligned, big font) -
-// used for TRUE partial-window refreshes (setPartialWindow), so only
-// this small area redraws each tick instead of the whole screen. Some
-// e-paper controllers want the window x/width byte-aligned (multiple of
-// 8), so we round for safety.
-#define CLOCK_BOX_WIDTH 90
-#define CLOCK_BOX_HEIGHT 32
-
-static int clockBoxX() {
-  int x = SCREEN_WIDTH - CLOCK_BOX_WIDTH;
-  return (x / 8) * 8;
+// Like printCentered(), but centers within an arbitrary [xLeft, xLeft+width)
+// span instead of the full screen - used for the game screen's two
+// player halves.
+static void printCenteredIn(const char *text, int xLeft, int width, int y) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  int x = xLeft + ((int)width - (int)w) / 2;
+  if (x < xLeft) x = xLeft;  // clamp rather than let a too-long string spill past its half
+  display.setCursor(x, y);
+  display.print(text);
 }
 
-static int clockBoxWidthAligned() {
-  int w = SCREEN_WIDTH - clockBoxX();
-  return ((w + 7) / 8) * 8;
+// Game screen layout: a vertical divider splits the area below the top
+// bar into two halves - opponent on the LEFT, "me" on the RIGHT (per the
+// user's mockup - matches sitting across a real board with "me" nearer).
+// Each half gets its own centered name/rating/clock.
+#define GAME_DIVIDER_X (SCREEN_WIDTH / 2)
+#define GAME_CONTENT_TOP (STATUS_BAR_BASELINE + 6)  // just below the top bar's separator line
+#define GAME_HALF_NAME_Y 34
+#define GAME_HALF_RATING_Y 50
+#define GAME_HALF_CLOCK_Y 90
+#define GAME_HALF_MAX_CHARS 8  // conservative for a 125px half at 9pt bold mono - leaves margin so it can't crowd the divider
+
+// Solid bar at the top of a half, marking whoever is currently on the
+// clock - simpler and reads clearer at this width than a small icon
+// squeezed next to a centered name.
+static void drawActiveHighlight(int xLeft, int width) {
+  display.fillRect(xLeft + 6, GAME_CONTENT_TOP + 1, width - 12, 3, GxEPD_BLACK);
 }
 
-static void drawClockText(long clockMs, int baselineY) {
-  int minutes = clockMs / 60000;
-  int seconds = (clockMs / 1000) % 60;
-  char clockBuf[8];
-  snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", minutes, seconds);
-
-  display.setFont(&FreeMonoBold18pt7b);
-  printRightAligned(clockBuf, baselineY);
-}
-
-// Rating always goes on its own line (never squeezed onto the same line
-// as the name - simpler, and avoids the clock ever getting close to the
-// text). If the username is longer than NAME_LINE1_MAX_CHARS, the
-// overflow moves down to join the rating on line 2.
-#define NAME_LINE1_MAX_CHARS 10
-#define NAME_LINE2_GAP 16          // vertical gap between the name line and the rating line
-#define CLOCK_BASELINE_OFFSET 12   // clock sits a bit lower, roughly centered against the two text lines
-#define NAME_TEXT_X 16             // fixed left margin - leaves room for the "on move" icon and keeps both players' text aligned whether or not the icon is shown
-
-// Small filled right-pointing triangle ("on move" indicator) shown next
-// to whoever is currently on the clock. Drawn as a shape rather than the
-// unicode "▶" character, since the built-in GFX fonts don't include
-// that glyph (it would print as garbage/blank).
-static void drawPlayIcon(int textBaselineY) {
-  int cy = textBaselineY - 6;  // roughly vertically centered on the name text
-  display.fillTriangle(3, cy - 5, 3, cy + 5, 12, cy, GxEPD_BLACK);
-}
-
-static void drawPlayerLine(int y, const PlayerInfo &player, bool isActive) {
-  display.setFont(&FreeMonoBold9pt7b);
-
+static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool isActive) {
   if (isActive) {
-    drawPlayIcon(y);
+    drawActiveHighlight(xLeft, width);
   }
 
-  // Always truncate to NAME_LINE1_MAX_CHARS and always put the rating on
-  // its own line below - simpler than measuring/wrapping text, and gives
-  // a consistent layout regardless of name length.
-  char nameBuf[NAME_LINE1_MAX_CHARS + 1];
-  strncpy(nameBuf, player.username, NAME_LINE1_MAX_CHARS);
-  nameBuf[NAME_LINE1_MAX_CHARS] = '\0';
-
-  display.setCursor(NAME_TEXT_X, y);
-  display.print(nameBuf);
+  display.setFont(&FreeMonoBold9pt7b);
+  char nameBuf[GAME_HALF_MAX_CHARS + 1];
+  strncpy(nameBuf, player.username, GAME_HALF_MAX_CHARS);
+  nameBuf[GAME_HALF_MAX_CHARS] = '\0';
+  printCenteredIn(nameBuf, xLeft, width, GAME_HALF_NAME_Y);
 
   char ratingBuf[16];
   snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
-  display.setCursor(NAME_TEXT_X, y + NAME_LINE2_GAP);
-  display.print(ratingBuf);
+  printCenteredIn(ratingBuf, xLeft, width, GAME_HALF_RATING_Y);
 
-  drawClockText(player.clockMs, y + CLOCK_BASELINE_OFFSET);
+  int minutes = player.clockMs / 60000;
+  int seconds = (player.clockMs / 1000) % 60;
+  char clockBuf[8];
+  snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", minutes, seconds);
+  display.setFont(&FreeMonoBold18pt7b);
+  printCenteredIn(clockBuf, xLeft, width, GAME_HALF_CLOCK_Y);
 }
 
 // The logo/status alternation ONLY applies while waiting for a game
@@ -315,13 +310,11 @@ static void drawWaitingStatusContent(const ClockState &state) {
 
   display.setFont(&FreeMonoBold12pt7b);
   printCentered(T(STR_APP_NAME), 34);
+  display.drawFastHLine(0, 40, SCREEN_WIDTH, GxEPD_BLACK);
 
   printCenteredWrapped(statusHeadline(state), 66, 22, SCREEN_WIDTH - 20);
 
-  display.setFont(&FreeMonoBold9pt7b);
-  char ipLine[24];
-  snprintf(ipLine, sizeof(ipLine), "%s %s", T(STR_IP), state.wifiConnected ? state.ipAddress : "-");
-  printCentered(ipLine, 114);
+  drawBottomBar("WEBADMIN:", state.wifiConnected ? state.ipAddress : "-");
 }
 
 // Dedicated "game over" screen - shown for resultDisplayDurationMs
@@ -378,54 +371,26 @@ static int myPlayerIndex(const ClockState &state) {
 }
 
 // Game screen: always shown while a game is active, never alternates
-// with the logo (that would be confusing mid-game).
+// with the logo (that would be confusing mid-game). Same top bar as the
+// waiting screen (consistent look), a vertical divider splitting
+// opponent (left) from "me" (right), and the same bottom-bar style
+// (site URL left, move count right) as the waiting screen's IP line.
 static void drawGameContent(const ClockState &state) {
-  display.setFont(&FreeMonoBold9pt7b);
-  drawBatteryLabel(state.batteryPercentage);
+  drawTopStatusBar(state);
+  display.drawFastVLine(GAME_DIVIDER_X, GAME_CONTENT_TOP, BOTTOM_BAR_Y - GAME_CONTENT_TOP, GxEPD_BLACK);
 
-  char header[32];
-  snprintf(header, sizeof(header), "%s %d", T(STR_MOVE), state.moveCount);
-  display.setCursor(5, 12);
-  display.print(header);
+  int meIndex = myPlayerIndex(state);
+  int rightIndex = (meIndex == -1) ? 1 : meIndex;  // unknown - keep the pre-existing raw order
+  int leftIndex = 1 - rightIndex;
 
-  int bottomIndex = myPlayerIndex(state);
-  if (bottomIndex == -1) bottomIndex = 1;  // unknown - keep the pre-existing order
-  int topIndex = 1 - bottomIndex;
+  drawPlayerHalf(0, GAME_DIVIDER_X, state.players[leftIndex], state.activePlayerIndex == leftIndex);
+  drawPlayerHalf(GAME_DIVIDER_X, SCREEN_WIDTH - GAME_DIVIDER_X, state.players[rightIndex], state.activePlayerIndex == rightIndex);
 
-  drawPlayerLine(45, state.players[topIndex], state.activePlayerIndex == topIndex);
-  drawPlayerLine(90, state.players[bottomIndex], state.activePlayerIndex == bottomIndex);
-}
-
-// Redraws ONLY the two clock boxes, using a REAL partial window
-// (setPartialWindow). INTENTION was to avoid the full-screen flash when
-// ticking the clock every second, but on real hardware this caused
-// visual corruption (garbled characters, a distorted column on the
-// left) - likely the partial-window coordinates not lining up correctly
-// with DISPLAY_ROTATION on this panel/library combo. NOT CALLED for now
-// (see IvoChess_Clock.ino - falls back to periodic full refresh
-// instead). Left here for future debugging if we want to revisit true
-// partial refresh.
-//
-// NOTE if reviving this: it still assumes raw index 0 -> top(45),
-// index 1 -> bottom(90). drawGameContent() no longer does - it now
-// places whichever player matches myUsername at the bottom (see
-// myPlayerIndex()), so this would draw the wrong player's clock in the
-// wrong box whenever "me" isn't raw index 1. Thread topIndex/bottomIndex
-// through here the same way before re-enabling.
-void updateGameClocksPartial(const ClockState &state) {
-  const int baselineY[2] = {45 + CLOCK_BASELINE_OFFSET, 90 + CLOCK_BASELINE_OFFSET};  // matches drawPlayerLine(45/90, ...)
-  int boxX = clockBoxX();
-  int boxW = clockBoxWidthAligned();
-
-  for (int i = 0; i < 2; i++) {
-    int boxY = baselineY[i] - 24;
-
-    display.setPartialWindow(boxX, boxY, boxW, CLOCK_BOX_HEIGHT);
-    display.fillScreen(GxEPD_WHITE);
-    display.setTextColor(GxEPD_BLACK);
-    drawClockText(state.players[i].clockMs, baselineY[i]);
-    display.display(true);  // partial - only this small window redraws, no full-screen flash
-  }
+  char moveLabel[16];
+  snprintf(moveLabel, sizeof(moveLabel), "%s: ", T(STR_MOVE));
+  char moveCountStr[8];
+  snprintf(moveCountStr, sizeof(moveCountStr), "%d", state.moveCount);
+  drawBottomBar(moveLabel, moveCountStr);
 }
 
 void updateDisplay(bool fullRefresh, const ClockState &state) {

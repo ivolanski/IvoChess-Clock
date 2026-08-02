@@ -27,6 +27,8 @@ unsigned long resultDisplayDurationMs = DEFAULT_RESULT_DISPLAY_DURATION_SEC * 10
 
 static char wifiSSID[WIFI_SSID_MAX_LEN] = DEFAULT_WIFI_SSID;
 static char wifiPassword[WIFI_PASS_MAX_LEN] = DEFAULT_WIFI_PASSWORD;
+static char webAdminUser[WEBADMIN_USER_MAX_LEN] = DEFAULT_WEBADMIN_USER;
+static char webAdminPass[WEBADMIN_PASS_MAX_LEN] = DEFAULT_WEBADMIN_PASS;
 
 static Preferences prefs;
 static WebServer server(ADMIN_PORT);
@@ -58,6 +60,8 @@ static void loadConfig() {
   prefs.getString("my_username", "").toCharArray(myUsername, sizeof(myUsername));
   prefs.getString("wifi_ssid", DEFAULT_WIFI_SSID).toCharArray(wifiSSID, sizeof(wifiSSID));
   prefs.getString("wifi_pass", DEFAULT_WIFI_PASSWORD).toCharArray(wifiPassword, sizeof(wifiPassword));
+  prefs.getString("admin_user", DEFAULT_WEBADMIN_USER).toCharArray(webAdminUser, sizeof(webAdminUser));
+  prefs.getString("admin_pass", DEFAULT_WEBADMIN_PASS).toCharArray(webAdminPass, sizeof(webAdminPass));
   currentLanguage = (Language)prefs.getInt("lang", LANG_EN);
   currentDataSource = (DataSourceType)prefs.getInt("datasrc", DATA_SOURCE_CHESSCOM_WIFI);
 
@@ -83,6 +87,8 @@ static void saveConfig() {
   prefs.putString("my_username", myUsername);
   prefs.putString("wifi_ssid", wifiSSID);
   prefs.putString("wifi_pass", wifiPassword);
+  prefs.putString("admin_user", webAdminUser);
+  prefs.putString("admin_pass", webAdminPass);
   prefs.putInt("lang", (int)currentLanguage);
   prefs.putInt("datasrc", (int)currentDataSource);
 
@@ -144,7 +150,22 @@ static const char PAGE_STYLE[] =
     ".pill.warn{background:rgba(217,119,6,.15);color:var(--warn);}"
     "</style>";
 
+// HTTP Basic Auth, checked on every admin route - guards WiFi
+// credentials/session cookies from anyone who can just reach the
+// device's IP (or the setup hotspot, which uses the same defaults until
+// changed). Returns false (and already sent the 401 challenge) if the
+// request isn't authenticated yet - callers must return immediately.
+static bool checkAuth() {
+  if (!server.authenticate(webAdminUser, webAdminPass)) {
+    server.requestAuthentication(BASIC_AUTH, "IvoChess Clock");
+    return false;
+  }
+  return true;
+}
+
 static void handleRoot() {
+  if (!checkAuth()) return;
+
   String html = "<html><head><title>IvoChess Clock</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += PAGE_STYLE;
@@ -168,12 +189,8 @@ static void handleRoot() {
   html += "<h2>Chess.com account</h2><div class='card'>";
   html += "<label>PHPSESSID cookie</label><input type='password' name='phpsessid' placeholder='(leave empty to keep current)' autocomplete='off'>";
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
-  html += "<small>Both from your browser's DevTools (Application &rarr; Cookies &rarr; chess.com), logged into your account. "
-          "PHPSESSID alone expires every so often (401 errors) - CHESSCOM_REMEMBERME is the long-lived one "
-          "(chess.com's own \"stay signed in\") that lets the clock silently mint a fresh PHPSESSID on its own when that "
-          "happens, the same way your browser does. Only needed once - it rotates itself automatically after that.</small>";
+  html += "<small>See the GitHub README for how to get these.</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
-  html += "<small>Used to always show you in the bottom row (opponent on top) and to tell win/loss apart.</small>";
   html += "</div>";
 
   html += "<h2>Display</h2><div class='card'>";
@@ -187,7 +204,6 @@ static void handleRoot() {
 
   html += "<h2>Data source</h2><div class='card'>";
   html += "<select name='datasrc'><option value='0' selected>Chess.com (live, over WiFi)</option></select>";
-  html += "<small>ChessConnect/DGT3000 over Bluetooth isn't implemented yet.</small>";
   html += "</div>";
 
   html += "<h2>LED colors</h2><div class='card'>";
@@ -200,7 +216,11 @@ static void handleRoot() {
   html += "<div class='colorrow'><label>Draw / unknown</label><input type='color' name='led_draw' value='" + rgbToHex(ledColorDraw) + "'></div>";
   html += "<label>Brightness - day (0-255)</label><input type='number' name='led_bright_day' min='0' max='255' value='" + String(ledBrightnessDay) + "'>";
   html += "<label>Brightness - night (0-255)</label><input type='number' name='led_bright_night' min='0' max='255' value='" + String(ledBrightnessNight) + "'>";
-  html += "<small>Night mode: " + String(NIGHT_MODE_START_HOUR) + ":00-" + String(NIGHT_MODE_END_HOUR) + ":00 (set in config.h).</small>";
+  html += "</div>";
+
+  html += "<h2>Webadmin access</h2><div class='card'>";
+  html += "<label>Username</label><input type='text' name='adminuser' value='" + String(webAdminUser) + "' autocomplete='off'>";
+  html += "<label>Password</label><input type='password' name='adminpass' placeholder='(leave empty to keep current)' autocomplete='new-password'>";
   html += "</div>";
 
   html += "<input type='submit' value='Save'>";
@@ -211,6 +231,8 @@ static void handleRoot() {
 }
 
 static void handleSave() {
+  if (!checkAuth()) return;
+
   bool wifiChanged = false;
 
   if (server.hasArg("ssid") && server.arg("ssid") != String(wifiSSID)) {
@@ -232,6 +254,12 @@ static void handleSave() {
   }
   if (server.hasArg("myusername")) {
     server.arg("myusername").toCharArray(myUsername, sizeof(myUsername));
+  }
+  if (server.hasArg("adminuser") && server.arg("adminuser").length() > 0) {
+    server.arg("adminuser").toCharArray(webAdminUser, sizeof(webAdminUser));
+  }
+  if (server.hasArg("adminpass") && server.arg("adminpass").length() > 0) {
+    server.arg("adminpass").toCharArray(webAdminPass, sizeof(webAdminPass));
   }
   if (server.hasArg("lang")) {
     currentLanguage = (Language)server.arg("lang").toInt();

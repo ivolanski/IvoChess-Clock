@@ -23,6 +23,15 @@
 #define WIFI_SSID_MAX_LEN 33
 #define WIFI_PASS_MAX_LEN 65
 
+// HTTP Basic Auth on the admin portal itself - protects WiFi/session
+// cookies/etc from anyone who can reach the device's IP (or the setup
+// hotspot). Change these from the portal's own "Webadmin access" section
+// once logged in with the defaults.
+#define DEFAULT_WEBADMIN_USER "ivochess"
+#define DEFAULT_WEBADMIN_PASS "checkmate"
+#define WEBADMIN_USER_MAX_LEN 33
+#define WEBADMIN_PASS_MAX_LEN 33
+
 // ---------------------------------------------------------------------------
 // DISPLAY (Waveshare 2.13" e-Paper V4, GxEPD2_213_B74 driver)
 // ---------------------------------------------------------------------------
@@ -86,12 +95,12 @@
 // ---------------------------------------------------------------------------
 #define LED_COUNT 8
 #define LED_DATA_PIN LED_PIN
-#define DEFAULT_LED_BRIGHTNESS 100
-#define DEFAULT_LED_BRIGHTNESS_NIGHT 20
+#define DEFAULT_LED_BRIGHTNESS 200
+#define DEFAULT_LED_BRIGHTNESS_NIGHT 100
 #define LOW_BATTERY_THRESHOLD_PERCENT 15
 
-#define DEFAULT_LED_NO_WIFI        "#0000ff"  // blue
-#define DEFAULT_LED_LOW_BATTERY    "#ff8000"  // orange
+#define DEFAULT_LED_NO_WIFI        "#800080"  // purple
+#define DEFAULT_LED_LOW_BATTERY    "#ff0000"  // red
 #define DEFAULT_LED_WON            "#00ff00"  // green
 #define DEFAULT_LED_LOST           "#ff1493"  // pink
 #define DEFAULT_LED_DRAW           "#ffffff"  // white - also used for "who's on move" when that's not known yet
