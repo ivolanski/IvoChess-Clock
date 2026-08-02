@@ -173,7 +173,17 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
     if (httpCode == 401 || httpCode == 403) {
       http.end();
       if (attempt == 0 && renewSession()) {
+        // A retry immediately after renewal (same second) was observed
+        // to still 401 once, even though the new PHPSESSID demonstrably
+        // worked moments later (confirmed on a subsequent boot with the
+        // exact same cookie value) - looks like chess.com's session
+        // store needs a brief moment to propagate a freshly-issued
+        // session before it's readable by whichever backend handles the
+        // very next request. A short pause before retrying avoids
+        // depending on a slow poll cycle (or a reboot) to happen to
+        // outlast that propagation window.
         Serial.println("[ChessAPI] Retrying /service/play/games after session renewal...");
+        delay(1500);
         continue;
       }
       snprintf(statusOut, statusOutLen, "HTTP %d (session expired - recapture PHPSESSID/CHESSCOM_REMEMBERME)", httpCode);

@@ -3,7 +3,7 @@
 Language currentLanguage = LANG_EN;
 
 static const char *STRINGS_EN[STR_COUNT] = {
-  "Waiting for game...",
+  "Waiting for game",
   "Last result:",
   "Move",
   "IvoChess Clock",
@@ -20,10 +20,13 @@ static const char *STRINGS_EN[STR_COUNT] = {
   "You WON",
   "You LOST",
   "Draw",
+  "Connecting to WiFi...",
+  "Session expired",
+  "Connection error",
 };
 
 static const char *STRINGS_PT[STR_COUNT] = {
-  "Aguardando partida...",
+  "Aguardando partida",
   "Ultimo resultado:",
   "Lance",
   "IvoChess Clock",
@@ -40,6 +43,9 @@ static const char *STRINGS_PT[STR_COUNT] = {
   "Voce VENCEU",
   "Voce PERDEU",
   "Empate",
+  "Conectando ao WiFi...",
+  "Sessao expirada",
+  "Erro de conexao",
 };
 
 const char *T(StringId id) {

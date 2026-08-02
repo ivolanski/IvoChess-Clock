@@ -55,11 +55,162 @@ static void printCentered(const char *text, int y) {
   display.print(text);
 }
 
+// Like printCentered(), but wraps to a second centered line (at y +
+// lineHeight) if the text doesn't fit maxWidth on one line - splits at
+// the space closest to the middle of the string, so both halves come
+// out reasonably balanced instead of one long line + one short one.
+// Only wraps once (2 lines total) - plenty for the short status phrases
+// this is used for; not a general paragraph-wrapping engine.
+static void printCenteredWrapped(const char *text, int y, int lineHeight, int maxWidth) {
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  if (w <= (uint16_t)maxWidth) {
+    printCentered(text, y);
+    return;
+  }
+
+  int len = strlen(text);
+  int mid = len / 2;
+  int splitAt = -1;
+  for (int offset = 0; offset <= mid; offset++) {
+    if (mid - offset >= 0 && text[mid - offset] == ' ') {
+      splitAt = mid - offset;
+      break;
+    }
+    if (mid + offset < len && text[mid + offset] == ' ') {
+      splitAt = mid + offset;
+      break;
+    }
+  }
+
+  if (splitAt < 0) {
+    // No space to break at (single long word) - print as-is rather than
+    // fabricate a mid-word break.
+    printCentered(text, y);
+    return;
+  }
+
+  char line1[48], line2[48];
+  int n1 = splitAt < (int)sizeof(line1) - 1 ? splitAt : (int)sizeof(line1) - 1;
+  strncpy(line1, text, n1);
+  line1[n1] = '\0';
+  strncpy(line2, text + splitAt + 1, sizeof(line2) - 1);  // +1 skips the space itself
+  line2[sizeof(line2) - 1] = '\0';
+
+  printCentered(line1, y);
+  printCentered(line2, y + lineHeight);
+}
+
 static void drawBatteryLabel(int percentage) {
   char batBuf[16];
   snprintf(batBuf, sizeof(batBuf), "Batt: %d%%", percentage);
   display.setFont(&FreeMonoBold9pt7b);
   printRightAligned(batBuf, 12);
+}
+
+// ---- top status bar: WiFi name+signal (left), battery bars (right) ----
+// Used by the waiting/status screen only (the game screen has its own
+// compact "Batt: N%" label - drawBatteryLabel above - since it needs the
+// space for player names/clocks instead).
+
+// 0-4 bars, ~25% each, ceiling-rounded so any nonzero charge shows at
+// least 1 bar instead of looking dead-empty.
+static int batteryBarCount(int percentage) {
+  if (percentage <= 0) return 0;
+  int bars = (percentage + 24) / 25;
+  return (bars > 4) ? 4 : bars;
+}
+
+// 0-4 bars from RSSI - finer-grained than wifiQualityLabel()'s 3-tier
+// Poor/Good/Excellent, purely for this icon.
+static int wifiBarCount(int rssi) {
+  if (rssi >= -55) return 4;
+  if (rssi >= -65) return 3;
+  if (rssi >= -75) return 2;
+  if (rssi >= -85) return 1;
+  return 0;
+}
+
+// Ascending-height bars (like a phone signal icon) - x is the left edge.
+// Returns the total width drawn, so callers can lay out what follows.
+static int drawSignalBars(int x, int baselineY, int filled, int total) {
+  const int barW = 3, gap = 1, maxH = 8;
+  for (int i = 0; i < total; i++) {
+    int h = maxH * (i + 1) / total;
+    int bx = x + i * (barW + gap);
+    int by = baselineY - h;
+    if (i < filled) {
+      display.fillRect(bx, by, barW, h, GxEPD_BLACK);
+    } else {
+      display.drawRect(bx, by, barW, h, GxEPD_BLACK);
+    }
+  }
+  return total * barW + (total - 1) * gap;
+}
+
+// Equal-height gauge bars (battery) - x is the left edge of the group.
+static int drawGaugeBars(int x, int baselineY, int filled, int total) {
+  const int barW = 4, gap = 1, h = 7;
+  int by = baselineY - h;
+  for (int i = 0; i < total; i++) {
+    int bx = x + i * (barW + gap);
+    if (i < filled) {
+      display.fillRect(bx, by, barW, h, GxEPD_BLACK);
+    } else {
+      display.drawRect(bx, by, barW, h, GxEPD_BLACK);
+    }
+  }
+  return total * barW + (total - 1) * gap;
+}
+
+#define STATUS_BAR_BASELINE 11
+#define STATUS_BAR_MARGIN 4
+
+static void drawTopStatusBar(const ClockState &state) {
+  display.setFont(&FreeMonoBold9pt7b);
+
+  // Left: WiFi. Disconnected shows as plain text (no point in signal
+  // bars for a network we're not even on) - connected shows a short
+  // SSID plus signal bars right after it.
+  display.setCursor(STATUS_BAR_MARGIN, STATUS_BAR_BASELINE);
+  if (!state.wifiConnected) {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%s %s", T(STR_WIFI), T(STR_DISCONNECTED));
+    display.print(buf);
+  } else {
+    char ssidShort[11];
+    strncpy(ssidShort, state.wifiSSID, 10);
+    ssidShort[10] = '\0';
+    display.print(ssidShort);
+
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(ssidShort, 0, 0, &x1, &y1, &w, &h);
+    int barsX = STATUS_BAR_MARGIN + w + 6;
+    drawSignalBars(barsX, STATUS_BAR_BASELINE, wifiBarCount(state.wifiStrength), 4);
+  }
+
+  // Right: battery, as bars only (no percentage number - config asked
+  // for an at-a-glance gauge here, the exact number is still on the game
+  // screen via drawBatteryLabel).
+  const int battTotalW = 4 * 4 + 3 * 1;  // matches drawGaugeBars(total=4) geometry
+  int battX = SCREEN_WIDTH - STATUS_BAR_MARGIN - battTotalW;
+  drawGaugeBars(battX, STATUS_BAR_BASELINE, batteryBarCount(state.batteryPercentage), 4);
+
+  display.drawFastHLine(0, STATUS_BAR_BASELINE + 5, SCREEN_WIDTH, GxEPD_BLACK);
+}
+
+// Short, human, ALWAYS-fits-on-one-line status headline for the middle
+// of the waiting screen - deliberately not the raw apiStatus text (which
+// can be a long technical string like "HTTP 403 (session expired -
+// recapture PHPSESSID/CHESSCOM_REMEMBERME)" meant for Serial/debugging,
+// not a small e-paper screen with wrapping disabled - see initDisplay()).
+static const char *statusHeadline(const ClockState &state) {
+  if (!state.wifiConnected) return T(STR_WIFI_CONNECTING);
+  if (state.apiOk) return T(STR_WAITING_FOR_GAME);
+  if (strstr(state.apiStatus, "401") || strstr(state.apiStatus, "403")) return T(STR_SESSION_EXPIRED);
+  return T(STR_CONNECTION_ERROR);
 }
 
 // Fixed box reserved for each clock's text (right-aligned, big font) -
@@ -152,42 +303,25 @@ static void drawSetupModeContent(const ClockState &state) {
   printCentered(ipLine, 80);
 }
 
-// Waiting-for-game status screen: everything left-aligned and stacked -
-// simple for now, will get a nicer layout later.
+// Waiting-for-game status screen: top status bar (WiFi name+signal bars
+// left, battery bars right), the app name centered right below it (its
+// own line - putting it INLINE in the top bar collides with a long WiFi
+// SSID, no room guaranteed for both), one big centered headline in the
+// middle (either "Waiting for game" or a short error - see
+// statusHeadline() - wraps to 2 lines if it doesn't fit on one), and the
+// IP address at the bottom.
 static void drawWaitingStatusContent(const ClockState &state) {
+  drawTopStatusBar(state);
+
+  display.setFont(&FreeMonoBold12pt7b);
+  printCentered(T(STR_APP_NAME), 34);
+
+  printCenteredWrapped(statusHeadline(state), 66, 22, SCREEN_WIDTH - 20);
+
   display.setFont(&FreeMonoBold9pt7b);
-
-  char line[64];
-  int y = 12;
-  const int lineHeight = 15;
-
-  snprintf(line, sizeof(line), "Batt: %d%%", state.batteryPercentage);
-  display.setCursor(5, y);
-  display.print(line);
-  y += lineHeight;
-
-  snprintf(line, sizeof(line), "%s %s", T(STR_WIFI), state.wifiConnected ? state.wifiSSID : T(STR_NOT_CONNECTED));
-  display.setCursor(5, y);
-  display.print(line);
-  y += lineHeight;
-
-  snprintf(line, sizeof(line), "%s %s", T(STR_SIGNAL), state.wifiQuality);
-  display.setCursor(5, y);
-  display.print(line);
-  y += lineHeight;
-
-  snprintf(line, sizeof(line), "%s %s", T(STR_IP), state.ipAddress);
-  display.setCursor(5, y);
-  display.print(line);
-  y += lineHeight;
-
-  snprintf(line, sizeof(line), "%s %s", T(STR_API), state.apiStatus);
-  display.setCursor(5, y);
-  display.print(line);
-  y += lineHeight;
-
-  display.setCursor(5, y);
-  display.print(T(STR_WAITING_FOR_GAME));
+  char ipLine[24];
+  snprintf(ipLine, sizeof(ipLine), "%s %s", T(STR_IP), state.wifiConnected ? state.ipAddress : "-");
+  printCentered(ipLine, 114);
 }
 
 // Dedicated "game over" screen - shown for resultDisplayDurationMs
