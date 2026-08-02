@@ -111,6 +111,7 @@ static ClockState state = {
 
   .lastDisplayUpdate = 0,
   .lastFullRefresh = 0,
+  .lastGameActiveAt = 0,
 };
 
 void setup() {
@@ -157,6 +158,10 @@ void loop() {
 
   bool gameDataChanged = updateGameData(state);
 
+  if (state.hasGame) {
+    state.lastGameActiveAt = now;
+  }
+
   static int lastMoveCountSeen = -1;
   bool moveChanged = state.hasGame && (state.moveCount != lastMoveCountSeen);
   lastMoveCountSeen = state.moveCount;
@@ -175,8 +180,7 @@ void loop() {
   wasShowingResult = showingResultNow;
 
   static bool lastLogoPhase = true;
-  bool logoPhaseNow = (!state.hasGame) && !showingResultNow &&
-                       (((now / SCREEN_CYCLE_INTERVAL_MS) % 2) == 0);
+  bool logoPhaseNow = isLogoPhaseNow(state);
   bool phaseChanged = (logoPhaseNow != lastLogoPhase);
   lastLogoPhase = logoPhaseNow;
 

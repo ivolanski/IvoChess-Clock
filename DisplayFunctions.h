@@ -12,4 +12,10 @@ void drawStartupScreen();
 // need to worry about that.
 void updateDisplay(bool fullRefresh, const ClockState &state);
 
+// Whether the anti-burn-in logo screen would show right now, given the
+// current state - shared with IvoChess_Clock.ino so its own full-refresh
+// scheduling and updateDisplay()'s actual content dispatch never disagree
+// about what's on screen (they used to compute this separately).
+bool isLogoPhaseNow(const ClockState &state);
+
 #endif  // DISPLAY_FUNCTIONS_H

@@ -67,6 +67,14 @@ struct ClockState {
   // --- redraw control ---
   unsigned long lastDisplayUpdate;
   unsigned long lastFullRefresh;
+
+  // Last millis() at which hasGame was true - lets the display tell "no
+  // game at all right now" (fine to cycle the anti-burn-in logo screen)
+  // apart from "briefly reconnecting mid-game" (a live connection blip -
+  // see gameDataSourceFastTick() in GameDataSource.cpp - is not the same
+  // as genuinely idle, and showing the logo screen during it looked like
+  // it had frozen the game). 0 = no game seen yet this boot.
+  unsigned long lastGameActiveAt;
 };
 
 #endif  // CLOCK_STATE_H

@@ -55,6 +55,15 @@
 // so often, to avoid e-paper burn-in.
 #define SCREEN_CYCLE_INTERVAL_MS (30UL * 1000UL)
 
+// How long after a game was last active to keep SUPPRESSING the logo
+// screen (state.lastGameActiveAt in ClockState.h) - a live-connection
+// blip mid-game briefly drops hasGame while it reconnects
+// (gameDataSourceFastTick() in GameDataSource.cpp), and that's not the
+// same as genuinely idle: the game screen already refreshes on every
+// clock tick, so it doesn't need anti-burn-in cycling, and showing the
+// decorative logo during a reconnect blip looked like a frozen clock.
+#define GAME_RECONNECT_GRACE_MS (2UL * 60UL * 1000UL)
+
 // ---------------------------------------------------------------------------
 // CHESS.COM API
 // ---------------------------------------------------------------------------

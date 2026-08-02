@@ -72,7 +72,7 @@ static void drawChessStrip(int yTop) {
 }
 
 // Burn-in-avoidance screen - alternates with the status screen while
-// idle (see isLogoPhase()). Deliberately laid out to NOT reuse the
+// idle (see isLogoPhaseNow()). Deliberately laid out to NOT reuse the
 // waiting screen's pixel positions (chess-strip decoration instead of
 // status bars, a big 2-line all-caps title instead of one 12pt line,
 // different row heights throughout) so the two screens' ink doesn't
@@ -330,22 +330,6 @@ static void printCenteredIn(const char *text, int xLeft, int width, int y) {
   display.print(text);
 }
 
-// Like printCenteredIn(), but vertically centers within [zoneTop,
-// zoneBottom] using the real measured glyph box instead of a fixed y -
-// used for the rating line, which otherwise sits close enough to the
-// name line above it that a descender (a lowercase "y", "g", etc in the
-// username) can touch it.
-static void printCenteredInZone(const char *text, int xLeft, int width, int zoneTop, int zoneBottom) {
-  int16_t x1, y1;
-  uint16_t w, h;
-  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-  int x = xLeft + ((int)width - (int)w) / 2;
-  if (x < xLeft) x = xLeft;
-  int baseline = (zoneTop + zoneBottom) / 2 - y1 - (int)h / 2;
-  display.setCursor(x, baseline);
-  display.print(text);
-}
-
 // Game screen layout: a vertical divider splits the area below the top
 // bar into two halves - opponent on the LEFT, "me" on the RIGHT (per the
 // user's mockup - matches sitting across a real board with "me" nearer).
@@ -362,18 +346,18 @@ static void printCenteredInZone(const char *text, int xLeft, int width, int zone
 #define GAME_CLOCK_TOP (GAME_HALF_CLOCK_Y - 21)
 #define GAME_HALF_MAX_CHARS 8  // conservative for a 125px half at 9pt bold mono - leaves margin so it can't crowd the divider
 
-// Solid bar at the top of a half, marking whoever is currently on the
-// clock - simpler and reads clearer at this width than a small icon
-// squeezed next to a centered name.
-static void drawActiveHighlight(int xLeft, int width) {
-  display.fillRect(xLeft + 6, GAME_CONTENT_TOP + 1, width - 12, 3, GxEPD_BLACK);
+// "On move" indicator - a small filled right-pointing triangle (the
+// original single-column layout's icon; a solid highlight bar was tried
+// for this split layout but read as just "meh" in practice). cx is
+// where the icon should be CENTERED horizontally (the clock's first
+// digit - see drawPlayerHalf), baselineY is the text row it should align
+// with (the rating line).
+static void drawPlayIcon(int cx, int baselineY) {
+  int cy = baselineY - 4;  // roughly centered on the rating text
+  display.fillTriangle(cx - 5, cy - 5, cx - 5, cy + 5, cx + 4, cy, GxEPD_BLACK);
 }
 
 static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool isActive) {
-  if (isActive) {
-    drawActiveHighlight(xLeft, width);
-  }
-
   display.setFont(&FreeMonoBold9pt7b);
   char nameBuf[GAME_HALF_MAX_CHARS + 1];
   strncpy(nameBuf, player.username, GAME_HALF_MAX_CHARS);
@@ -382,21 +366,49 @@ static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool 
 
   char ratingBuf[16];
   snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
-  printCenteredInZone(ratingBuf, xLeft, width, GAME_NAME_BOTTOM, GAME_CLOCK_TOP);
+  int16_t rx1, ry1;
+  uint16_t rw, rh;
+  display.getTextBounds(ratingBuf, 0, 0, &rx1, &ry1, &rw, &rh);
+  int ratingBaseline = (GAME_NAME_BOTTOM + GAME_CLOCK_TOP) / 2 - ry1 - (int)rh / 2;
+  int ratingX = xLeft + ((int)width - (int)rw) / 2;
+  if (ratingX < xLeft) ratingX = xLeft;
+  display.setCursor(ratingX, ratingBaseline);
+  display.print(ratingBuf);
 
   int minutes = player.clockMs / 60000;
   int seconds = (player.clockMs / 1000) % 60;
   char clockBuf[8];
   snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", minutes, seconds);
   display.setFont(&FreeMonoBold18pt7b);
-  printCenteredIn(clockBuf, xLeft, width, GAME_HALF_CLOCK_Y);
+  int16_t cx1, cy1;
+  uint16_t cw, ch;
+  display.getTextBounds(clockBuf, 0, 0, &cx1, &cy1, &cw, &ch);
+  int clockX = xLeft + ((int)width - (int)cw) / 2;
+  if (clockX < xLeft) clockX = xLeft;
+  display.setCursor(clockX, GAME_HALF_CLOCK_Y);
+  display.print(clockBuf);
+
+  if (isActive) {
+    // Centered above the clock's first digit - one 18pt mono glyph is
+    // ~21px wide, so +10 lands on that digit's own center.
+    drawPlayIcon(clockX + 10, ratingBaseline);
+  }
 }
 
-// The logo/status alternation ONLY applies while waiting for a game
-// (avoids burn-in during long idle periods). Once a game starts, the
-// game screen is shown continuously - checked by the caller before
-// calling isLogoPhase() at all.
-static bool isLogoPhase() {
+// The logo/status alternation ONLY applies while genuinely idle - not
+// mid-game (game screen already refreshes on every clock tick, it
+// doesn't need anti-burn-in cycling) and not for a while after a game
+// was last active (a live-connection blip briefly drops hasGame while it
+// reconnects - see GAME_RECONNECT_GRACE_MS - showing the logo during
+// that looked like the clock had frozen). The single source of truth for
+// this decision - IvoChess_Clock.ino calls it too, for its own
+// full-refresh scheduling, so the two never disagree about what's
+// currently on screen.
+bool isLogoPhaseNow(const ClockState &state) {
+  if (state.hasGame) return false;
+  if (millis() < state.resultDisplayUntilMs) return false;
+  if (state.lastGameActiveAt != 0 && (millis() - state.lastGameActiveAt) < GAME_RECONNECT_GRACE_MS) return false;
+
   unsigned long cyclePos = millis() % (SCREEN_CYCLE_INTERVAL_MS * 2);
   return cyclePos < SCREEN_CYCLE_INTERVAL_MS;
 }
@@ -529,7 +541,7 @@ void updateDisplay(bool fullRefresh, const ClockState &state) {
     // Dedicated result screen has priority over the logo for its
     // (admin-portal configurable) window.
     drawResultContent(state);
-  } else if (isLogoPhase()) {
+  } else if (isLogoPhaseNow(state)) {
     drawLogoContent();
   } else {
     drawWaitingStatusContent(state);
