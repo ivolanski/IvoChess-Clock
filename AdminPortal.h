@@ -4,7 +4,20 @@
 #include "ClockState.h"
 
 // Global buffer with the current PHPSESSID (used by ChessApiFunctions).
+// ChessApiFunctions.cpp updates this IN PLACE (and persists it via
+// persistSessionCookies() below) whenever chess.com silently renews the
+// session using chessComRememberMe - see the comment on renewSession()
+// there for how/why that works.
 extern char phpsessid[];
+
+// Chess.com's long-lived "remember me" cookie (CHESSCOM_REMEMBERME,
+// captured from a browser the same way as phpsessid). This is what lets
+// ChessApiFunctions.cpp mint a fresh PHPSESSID on its own when the
+// current one expires - a real browser tab does the same thing
+// transparently, this is that same mechanism. Rotates on every use (the
+// server issues a new token each time), which is why it's also updated
+// in place and re-persisted alongside phpsessid.
+extern char chessComRememberMe[];
 
 // Global buffer with the account's own chess.com username (used by
 // DisplayFunctions to always draw "me" in the bottom row, like sitting
@@ -29,6 +42,11 @@ extern uint8_t ledBrightnessNight;
 // How long (ms) the game-over result stays on screen before returning to
 // the waiting/status screen. Configurable in seconds in the admin portal.
 extern unsigned long resultDisplayDurationMs;
+
+// Persists the CURRENT phpsessid/chessComRememberMe to Preferences -
+// called by ChessApiFunctions.cpp after a successful session renewal, so
+// the fresh values survive a reboot. Doesn't touch any other setting.
+void persistSessionCookies();
 
 // A SINGLE web portal/server - reachable via the "IvoChess-Setup" hotspot
 // (when there's no WiFi configured yet, or the saved WiFi failed) OR via

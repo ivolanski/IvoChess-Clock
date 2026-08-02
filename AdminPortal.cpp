@@ -2,6 +2,7 @@
 #include "config.h"
 #include "Translations.h"
 #include "GameDataSource.h"
+#include "ChessApiFunctions.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -10,6 +11,7 @@
 #include <ESPmDNS.h>
 
 char phpsessid[PHPSESSID_MAX_LEN] = DEFAULT_PHPSESSID;
+char chessComRememberMe[CHESSCOM_REMEMBERME_MAX_LEN] = DEFAULT_CHESSCOM_REMEMBERME;
 char myUsername[USERNAME_MAX_LEN] = "";
 
 uint8_t ledColorNoWifi[3];
@@ -52,6 +54,7 @@ static String rgbToHex(const uint8_t rgb[3]) {
 static void loadConfig() {
   prefs.begin(PREFS_NAMESPACE, /*readOnly=*/true);
   prefs.getString(PREFS_KEY_PHPSESSID, DEFAULT_PHPSESSID).toCharArray(phpsessid, sizeof(phpsessid));
+  prefs.getString("remember_me", DEFAULT_CHESSCOM_REMEMBERME).toCharArray(chessComRememberMe, sizeof(chessComRememberMe));
   prefs.getString("my_username", "").toCharArray(myUsername, sizeof(myUsername));
   prefs.getString("wifi_ssid", DEFAULT_WIFI_SSID).toCharArray(wifiSSID, sizeof(wifiSSID));
   prefs.getString("wifi_pass", DEFAULT_WIFI_PASSWORD).toCharArray(wifiPassword, sizeof(wifiPassword));
@@ -76,6 +79,7 @@ static void loadConfig() {
 static void saveConfig() {
   prefs.begin(PREFS_NAMESPACE, /*readOnly=*/false);
   prefs.putString(PREFS_KEY_PHPSESSID, phpsessid);
+  prefs.putString("remember_me", chessComRememberMe);
   prefs.putString("my_username", myUsername);
   prefs.putString("wifi_ssid", wifiSSID);
   prefs.putString("wifi_pass", wifiPassword);
@@ -94,6 +98,13 @@ static void saveConfig() {
 
   prefs.putUInt("result_dur_s", (unsigned int)(resultDisplayDurationMs / 1000UL));
 
+  prefs.end();
+}
+
+void persistSessionCookies() {
+  prefs.begin(PREFS_NAMESPACE, /*readOnly=*/false);
+  prefs.putString(PREFS_KEY_PHPSESSID, phpsessid);
+  prefs.putString("remember_me", chessComRememberMe);
   prefs.end();
 }
 
@@ -155,8 +166,13 @@ static void handleRoot() {
   html += "</div>";
 
   html += "<h2>Chess.com account</h2><div class='card'>";
-  html += "<label>PHPSESSID cookie</label><input type='password' name='phpsessid' placeholder='(leave empty to keep current)'>";
-  html += "<label>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
+  html += "<label>PHPSESSID cookie</label><input type='password' name='phpsessid' placeholder='(leave empty to keep current)' autocomplete='off'>";
+  html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
+  html += "<small>Both from your browser's DevTools (Application &rarr; Cookies &rarr; chess.com), logged into your account. "
+          "PHPSESSID alone expires every so often (401 errors) - CHESSCOM_REMEMBERME is the long-lived one "
+          "(chess.com's own \"stay signed in\") that lets the clock silently mint a fresh PHPSESSID on its own when that "
+          "happens, the same way your browser does. Only needed once - it rotates itself automatically after that.</small>";
+  html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
   html += "<small>Used to always show you in the bottom row (opponent on top) and to tell win/loss apart.</small>";
   html += "</div>";
 
@@ -205,8 +221,14 @@ static void handleSave() {
     server.arg("pass").toCharArray(wifiPassword, sizeof(wifiPassword));
     wifiChanged = true;
   }
+  bool sessionCookiesChanged = false;
   if (server.hasArg("phpsessid") && server.arg("phpsessid").length() > 0) {
     server.arg("phpsessid").toCharArray(phpsessid, sizeof(phpsessid));
+    sessionCookiesChanged = true;
+  }
+  if (server.hasArg("remembme") && server.arg("remembme").length() > 0) {
+    server.arg("remembme").toCharArray(chessComRememberMe, sizeof(chessComRememberMe));
+    sessionCookiesChanged = true;
   }
   if (server.hasArg("myusername")) {
     server.arg("myusername").toCharArray(myUsername, sizeof(myUsername));
@@ -235,6 +257,14 @@ static void handleSave() {
   if (server.hasArg("led_bright_night")) ledBrightnessNight = (uint8_t)constrain(server.arg("led_bright_night").toInt(), 0, 255);
 
   saveConfig();
+
+  if (sessionCookiesChanged) {
+    // Without this, ChessApiFunctions.cpp's session cookie jar keeps
+    // using whatever was seeded at boot - a credential-only save doesn't
+    // restart the device, so the globals above would silently drift out
+    // of sync with the jar until the next reboot.
+    refreshSessionCookies();
+  }
 
   if (wifiChanged) {
     // Only a WiFi network/password change actually needs a reboot (to

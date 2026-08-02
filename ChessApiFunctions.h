@@ -18,4 +18,12 @@ struct GameInfo {
 // the status screen.
 bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen);
 
+// Re-syncs the internal session cookie jar's PHPSESSID/CHESSCOM_REMEMBERME
+// entries from the current phpsessid/chessComRememberMe globals
+// (AdminPortal.h). Call this whenever the admin portal saves a new value
+// for either - a credential-only save doesn't reboot the device (see
+// AdminPortal.cpp handleSave()), so without this the jar would keep using
+// whatever was seeded at boot until the next restart.
+void refreshSessionCookies();
+
 #endif  // CHESS_API_FUNCTIONS_H

@@ -10,6 +10,7 @@
 #define DEFAULT_WIFI_SSID     ""
 #define DEFAULT_WIFI_PASSWORD ""
 #define DEFAULT_PHPSESSID     ""
+#define DEFAULT_CHESSCOM_REMEMBERME ""
 
 #define SETUP_AP_NAME "IvoChess-Setup"
 #define WIFI_CONNECT_TIMEOUT_SECONDS 60
@@ -18,6 +19,7 @@
 #define PREFS_NAMESPACE "ivochess"
 #define PREFS_KEY_PHPSESSID "phpsessid"
 #define PHPSESSID_MAX_LEN 256
+#define CHESSCOM_REMEMBERME_MAX_LEN 256
 #define WIFI_SSID_MAX_LEN 33
 #define WIFI_PASS_MAX_LEN 65
 

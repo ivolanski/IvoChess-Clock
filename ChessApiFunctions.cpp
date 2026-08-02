@@ -7,47 +7,194 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 
+static const char *USER_AGENT =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// Persistent across calls (not reset each fetchActiveGame()) so cookies
+// behave like a real browser tab's jar - both PHPSESSID and
+// CHESSCOM_REMEMBERME live here, and the ESP32 core's HTTPClient
+// (HTTPClient.h: setCookieJar/Cookie/CookieJar) automatically sends
+// whatever's in it and folds in any Set-Cookie from responses. Needed
+// because collectHeaders()+header("Set-Cookie") only keeps the LAST of
+// several same-named headers - chess.com sends ~9 Set-Cookie lines on
+// one response, and both cookies we care about are commonly among them.
+static CookieJar sessionCookieJar;
+static bool jarSeeded = false;
+
+static void seedJarCookie(const char *name, const char *value) {
+  if (value[0] == '\0') return;
+  Cookie c;
+  c.name = name;
+  c.value = value;
+  c.domain = "chess.com";  // matches what HTTPClient::setCookie() derives for www.chess.com - see its domain-parsing fallback
+  sessionCookieJar.push_back(c);
+}
+
+// Seeds the jar from Preferences (via AdminPortal's phpsessid/
+// chessComRememberMe) exactly once per boot. After that the jar is the
+// live source of truth - renewSession() below updates it AND the
+// globals AND Preferences together, so they never drift apart.
+static void seedCookieJarIfNeeded() {
+  if (jarSeeded) return;
+  jarSeeded = true;
+  seedJarCookie("PHPSESSID", phpsessid);
+  seedJarCookie("CHESSCOM_REMEMBERME", chessComRememberMe);
+}
+
+void refreshSessionCookies() {
+  // Drop any existing PHPSESSID/CHESSCOM_REMEMBERME entries first so a
+  // repeated call can't leave duplicates in the jar (HTTPClient's own
+  // Set-Cookie handling matches by name+domain and replaces in place, but
+  // this manual refresh path doesn't go through that), then reseed from
+  // whatever's current in the globals.
+  for (auto it = sessionCookieJar.begin(); it != sessionCookieJar.end();) {
+    if (it->name == "PHPSESSID" || it->name == "CHESSCOM_REMEMBERME") {
+      it = sessionCookieJar.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  seedJarCookie("PHPSESSID", phpsessid);
+  seedJarCookie("CHESSCOM_REMEMBERME", chessComRememberMe);
+  jarSeeded = true;  // in case this runs before the first fetchActiveGame() ever does
+}
+
+// Copies the jar's current PHPSESSID/CHESSCOM_REMEMBERME into the shared
+// globals (so LiveGameClient.cpp's next WebSocket connect automatically
+// uses whatever's freshest) and persists them, but ONLY if either
+// actually changed - avoids pointless flash writes on every poll.
+static void syncJarToGlobalsIfChanged() {
+  bool changed = false;
+  for (const Cookie &c : sessionCookieJar) {
+    if (c.name == "PHPSESSID" && c.value != String(phpsessid)) {
+      c.value.toCharArray(phpsessid, PHPSESSID_MAX_LEN);
+      changed = true;
+    } else if (c.name == "CHESSCOM_REMEMBERME" && c.value != String(chessComRememberMe)) {
+      c.value.toCharArray(chessComRememberMe, CHESSCOM_REMEMBERME_MAX_LEN);
+      changed = true;
+    }
+  }
+  if (changed) {
+    persistSessionCookies();
+    Serial.println("[ChessAPI] Session renewed via CHESSCOM_REMEMBERME - fresh PHPSESSID saved.");
+  }
+}
+
+// This is the actual mechanism a browser tab uses to "stay signed in for
+// months" - confirmed empirically (not guessed): a request to an API
+// subroute like /service/play/games with an EXPIRED PHPSESSID plus a
+// VALID CHESSCOM_REMEMBERME still 401s - that route doesn't participate
+// in renewal. A plain page load (tried /home) does: chess.com's
+// authentication middleware notices the session is gone, validates the
+// long-lived remember-me token instead, and responds with a fresh
+// PHPSESSID via Set-Cookie - and rotates CHESSCOM_REMEMBERME itself to a
+// new token in the same response (typical remember-me security pattern:
+// each use invalidates the old token, so re-using a stale captured value
+// a second time correctly fails). No login form, no credentials beyond
+// the one-time capture of this cookie - the same hands-off renewal a
+// browser gets automatically.
+//
+// Deliberately NOT gating success on the HTTP status code: this route
+// answered 200 in manual testing but 302 from the device (same account,
+// same cookie) - redirects can carry Set-Cookie just as well as a 200,
+// and HTTPClient's default is to NOT auto-follow them
+// (HTTPC_DISABLE_FOLLOW_REDIRECTS), so whatever status came back, any
+// Set-Cookie on THAT response is already in the jar by the time GET()
+// returns. Only a true transport failure (code <= 0: no response at all)
+// is treated as "couldn't even try". The real test of success is the
+// caller's retry of the actual endpoint - if the jar didn't actually get
+// a working PHPSESSID, that retry will just 401 again.
+static bool renewSession() {
+  if (chessComRememberMe[0] == '\0') {
+    return false;  // nothing to renew with - user needs to recapture both cookies
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setCookieJar(&sessionCookieJar);
+  if (!http.begin(client, "https://www.chess.com/home")) {
+    return false;
+  }
+  http.addHeader("Accept", "text/html,application/xhtml+xml");
+  http.addHeader("User-Agent", USER_AGENT);
+  http.setTimeout(10000);
+
+  int code = http.GET();
+  http.end();  // response fully read by now - any Set-Cookie already folded into sessionCookieJar
+
+  if (code <= 0) {
+    Serial.printf("[ChessAPI] Session renewal request failed outright (%d) - network/timeout issue, not a cookie problem.\n", code);
+    return false;
+  }
+
+  Serial.printf("[ChessAPI] Session renewal request returned HTTP %d - checking if it granted a fresh PHPSESSID...\n", code);
+  syncJarToGlobalsIfChanged();
+  return true;  // "attempted and got a response" - the caller's retry is the real success check
+}
+
 bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
   if (WiFi.status() != WL_CONNECTED) {
     snprintf(statusOut, statusOutLen, "No WiFi");
     return false;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();  // TODO: swap for a real Root CA once the flow is validated
+  seedCookieJarIfNeeded();
 
-  HTTPClient http;
-  if (!http.begin(client, GAMES_ENDPOINT_URL)) {
-    snprintf(statusOut, statusOutLen, "begin() failed");
-    return false;
-  }
+  String body;
+  bool gotBody = false;
 
-  char cookieHeader[PHPSESSID_MAX_LEN + 32];
-  snprintf(cookieHeader, sizeof(cookieHeader), "PHPSESSID=%s", phpsessid);
-  http.addHeader("Cookie", cookieHeader);
-  http.addHeader("Accept", "application/json");
-  http.addHeader("User-Agent",
-                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                 "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
-  http.setTimeout(10000);
+  // Up to 2 attempts: if the first hits 401/403, try a session renewal
+  // (see renewSession() above) and retry ONCE with whatever fresh
+  // PHPSESSID that produced. Doesn't loop further - a renewal failure
+  // means CHESSCOM_REMEMBERME itself needs recapturing, not a retry.
+  for (int attempt = 0; attempt < 2 && !gotBody; attempt++) {
+    WiFiClientSecure client;
+    client.setInsecure();  // TODO: swap for a real Root CA once the flow is validated
 
-  int httpCode = http.GET();
-  if (httpCode <= 0) {
-    snprintf(statusOut, statusOutLen, "Timeout/conn error (%d)", httpCode);
-    http.end();
-    return false;
-  }
-  if (httpCode != 200) {
-    snprintf(statusOut, statusOutLen, "HTTP %d", httpCode);
-    http.end();
-    if (httpCode == 401 || httpCode == 403) {
-      Serial.println("[ChessAPI] 401/403 - PHPSESSID is probably expired, recapture it in the browser.");
+    HTTPClient http;
+    http.setCookieJar(&sessionCookieJar);
+    if (!http.begin(client, GAMES_ENDPOINT_URL)) {
+      snprintf(statusOut, statusOutLen, "begin() failed");
+      return false;
     }
-    return false;
+    http.addHeader("Accept", "application/json");
+    http.addHeader("User-Agent", USER_AGENT);
+    http.setTimeout(10000);
+
+    int httpCode = http.GET();
+    if (httpCode <= 0) {
+      snprintf(statusOut, statusOutLen, "Timeout/conn error (%d)", httpCode);
+      http.end();
+      return false;
+    }
+
+    if (httpCode == 401 || httpCode == 403) {
+      http.end();
+      if (attempt == 0 && renewSession()) {
+        Serial.println("[ChessAPI] Retrying /service/play/games after session renewal...");
+        continue;
+      }
+      snprintf(statusOut, statusOutLen, "HTTP %d (session expired - recapture PHPSESSID/CHESSCOM_REMEMBERME)", httpCode);
+      Serial.println("[ChessAPI] 401/403 and renewal via CHESSCOM_REMEMBERME didn't help - both cookies need recapturing in the browser.");
+      return false;
+    }
+
+    if (httpCode != 200) {
+      snprintf(statusOut, statusOutLen, "HTTP %d", httpCode);
+      http.end();
+      return false;
+    }
+
+    body = http.getString();
+    http.end();
+    gotBody = true;
   }
 
-  String body = http.getString();
-  http.end();
+  if (!gotBody) {
+    return false;  // shouldn't be reachable, but don't fall through into stale-data parsing if it ever is
+  }
 
   DynamicJsonDocument doc(8192);
   DeserializationError parseError = deserializeJson(doc, body);
