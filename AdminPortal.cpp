@@ -187,9 +187,13 @@ static void handleRoot() {
   html += "</div>";
 
   html += "<h2>Chess.com account</h2><div class='card'>";
-  html += "<label>PHPSESSID cookie</label><input type='password' name='phpsessid' placeholder='(leave empty to keep current)' autocomplete='off'>";
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
-  html += "<small>See the GitHub README for how to get these.</small>";
+  html += "<small>This is the only cookie you need - the clock mints its own PHPSESSID from it "
+          "and refreshes it on its own from then on.</small>";
+  html += "<small>Capture it from an <b>incognito window</b>, then close that window without "
+          "browsing or playing in it. The token is single-use: whichever client refreshes it "
+          "first invalidates every other copy, so it cannot be shared with a browser you keep using.</small>";
+  html += "<small>Step-by-step: ivochess.ivolanski.com</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
   html += "</div>";
 
@@ -243,14 +247,29 @@ static void handleSave() {
     server.arg("pass").toCharArray(wifiPassword, sizeof(wifiPassword));
     wifiChanged = true;
   }
+  // Only CHESSCOM_REMEMBERME is asked for. PHPSESSID is derived from it
+  // (GET /home with a valid remember-me answers 200 and issues a fresh
+  // PHPSESSID via Set-Cookie - verified against the live server), and the
+  // derivation only works in that direction, so the remember-me is the one
+  // that actually has to come from the user.
+  //
+  // Having a single field also removes an entire failure mode by
+  // construction: it used to be possible to paste a fresh PHPSESSID while
+  // leaving a stale remember-me in place. That token is single-use, so
+  // replaying one the server has already rotated past reads as a replayed
+  // token rather than an expired one, and the usual response is to
+  // invalidate every session on the account - killing the very cookie that
+  // had just been pasted. With one field that combination cannot be
+  // entered at all.
   bool sessionCookiesChanged = false;
-  if (server.hasArg("phpsessid") && server.arg("phpsessid").length() > 0) {
-    server.arg("phpsessid").toCharArray(phpsessid, sizeof(phpsessid));
-    sessionCookiesChanged = true;
-  }
   if (server.hasArg("remembme") && server.arg("remembme").length() > 0) {
     server.arg("remembme").toCharArray(chessComRememberMe, sizeof(chessComRememberMe));
+    // Any PHPSESSID we were holding belongs to the previous token's
+    // session. Clear it so the next poll goes straight to a renewal and
+    // mints one that genuinely matches this token.
+    phpsessid[0] = '\0';
     sessionCookiesChanged = true;
+    Serial.println("[AdminPortal] New CHESSCOM_REMEMBERME saved - clearing old PHPSESSID, a fresh one will be minted on the next poll.");
   }
   if (server.hasArg("myusername")) {
     server.arg("myusername").toCharArray(myUsername, sizeof(myUsername));

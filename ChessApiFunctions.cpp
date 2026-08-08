@@ -60,25 +60,85 @@ void refreshSessionCookies() {
   jarSeeded = true;  // in case this runs before the first fetchActiveGame() ever does
 }
 
+// Collapses any duplicate PHPSESSID/CHESSCOM_REMEMBERME entries down to
+// the newest one, keeping the LAST occurrence (HTTPClient::setCookie()
+// appends a second entry instead of replacing whenever the incoming
+// Domain attribute doesn't string-match the one already in the jar). With
+// duplicates present, generateCookieString() emits BOTH
+// ("PHPSESSID=old ;PHPSESSID=new") and the server picks one - usually the
+// stale one, which reads as a dead session no matter how fresh the real
+// cookie is. Also pins the domain to the value chess.com actually uses
+// (Domain=.chess.com -> "chess.com" after HTTPClient strips the dot) so
+// future Set-Cookies replace in place instead of piling up.
+static void dedupeSessionCookies() {
+  static const char *const kSessionCookieNames[] = {"PHPSESSID", "CHESSCOM_REMEMBERME"};
+  for (const char *name : kSessionCookieNames) {
+    int lastIdx = -1;
+    for (int i = 0; i < (int)sessionCookieJar.size(); i++) {
+      if (sessionCookieJar[i].name == name) lastIdx = i;
+    }
+    if (lastIdx < 0) continue;
+    sessionCookieJar[lastIdx].domain = "chess.com";
+    // Never let the jar expire these two out from under us: chess.com
+    // sends PHPSESSID as a pure session cookie (no Expires/Max-Age at
+    // all), so an inherited/garbage expiry from a previous entry must not
+    // survive here.
+    sessionCookieJar[lastIdx].expires.valid = false;
+    sessionCookieJar[lastIdx].max_age.valid = false;
+    for (int i = (int)sessionCookieJar.size() - 1; i >= 0; i--) {
+      if (i != lastIdx && sessionCookieJar[i].name == name) {
+        sessionCookieJar.erase(sessionCookieJar.begin() + i);
+        if (i < lastIdx) lastIdx--;
+      }
+    }
+  }
+}
+
 // Copies the jar's current PHPSESSID/CHESSCOM_REMEMBERME into the shared
 // globals (so LiveGameClient.cpp's next WebSocket connect automatically
 // uses whatever's freshest) and persists them, but ONLY if either
 // actually changed - avoids pointless flash writes on every poll.
-static void syncJarToGlobalsIfChanged() {
+//
+// CRITICAL: this must run after EVERY request, not just after an explicit
+// renewal. chess.com rotates both cookies during ordinary traffic, and
+// whatever it rotates to lives only in the jar (RAM) until this copies it
+// out. Two things break when that copy doesn't happen:
+//   - a power cycle (the on/off switch cuts battery power) reseeds the jar
+//     from flash, i.e. from a value the server retired long ago;
+//   - CHESSCOM_REMEMBERME is single-use. Presenting a token the server has
+//     already rotated past is not read as "expired" but as token theft,
+//     and the standard response is to invalidate EVERY session for the
+//     account - so a stale copy doesn't just fail to renew, it actively
+//     kills the working session we still had.
+static bool syncJarToGlobalsIfChanged() {
+  dedupeSessionCookies();
+
   bool changed = false;
   for (const Cookie &c : sessionCookieJar) {
     if (c.name == "PHPSESSID" && c.value != String(phpsessid)) {
+      if (c.value.length() >= PHPSESSID_MAX_LEN) {
+        Serial.printf("[ChessAPI] PHPSESSID too long for buffer (%u >= %d) - NOT storing a truncated cookie.\n",
+                      c.value.length(), PHPSESSID_MAX_LEN);
+        continue;
+      }
       c.value.toCharArray(phpsessid, PHPSESSID_MAX_LEN);
       changed = true;
+      Serial.println("[ChessAPI] Server rotated PHPSESSID - saving the new one.");
     } else if (c.name == "CHESSCOM_REMEMBERME" && c.value != String(chessComRememberMe)) {
+      if (c.value.length() >= CHESSCOM_REMEMBERME_MAX_LEN) {
+        Serial.printf("[ChessAPI] CHESSCOM_REMEMBERME too long for buffer (%u >= %d) - NOT storing a truncated token.\n",
+                      c.value.length(), CHESSCOM_REMEMBERME_MAX_LEN);
+        continue;
+      }
       c.value.toCharArray(chessComRememberMe, CHESSCOM_REMEMBERME_MAX_LEN);
       changed = true;
+      Serial.println("[ChessAPI] Server rotated CHESSCOM_REMEMBERME - saving the new token (the old one is now dead).");
     }
   }
   if (changed) {
     persistSessionCookies();
-    Serial.println("[ChessAPI] Session renewed via CHESSCOM_REMEMBERME - fresh PHPSESSID saved.");
   }
+  return changed;
 }
 
 // This is the actual mechanism a browser tab uses to "stay signed in for
@@ -110,6 +170,10 @@ static bool renewSession() {
     return false;  // nothing to renew with - user needs to recapture both cookies
   }
 
+  // Remember what we're about to present, so we can tell afterwards
+  // whether the server actually rotated us onto a new token.
+  String presentedToken = chessComRememberMe;
+
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
@@ -121,7 +185,15 @@ static bool renewSession() {
   http.addHeader("User-Agent", USER_AGENT);
   http.setTimeout(10000);
 
+  // /home answers 302 for a signed-out request, and the redirect target is
+  // the only reliable way to tell "remember-me accepted" from
+  // "remember-me refused" - both can come back as a 302 carrying
+  // Set-Cookie headers, so the status code alone says nothing.
+  static const char *LOCATION_HEADER = "Location";
+  http.collectHeaders(&LOCATION_HEADER, 1);
+
   int code = http.GET();
+  String location = http.header("Location");
   http.end();  // response fully read by now - any Set-Cookie already folded into sessionCookieJar
 
   if (code <= 0) {
@@ -129,9 +201,35 @@ static bool renewSession() {
     return false;
   }
 
-  Serial.printf("[ChessAPI] Session renewal request returned HTTP %d - checking if it granted a fresh PHPSESSID...\n", code);
+  Serial.printf("[ChessAPI] Session renewal returned HTTP %d%s\n", code,
+                location.length() ? (" -> " + location).c_str() : "");
+
   syncJarToGlobalsIfChanged();
-  return true;  // "attempted and got a response" - the caller's retry is the real success check
+  if (presentedToken == chessComRememberMe && chessComRememberMe[0] != '\0') {
+    // Worth noticing: a genuine remember-me renewal normally hands back a
+    // rotated token. Getting the same one back means this response didn't
+    // really re-authenticate us, whatever its status code was.
+    Serial.println("[ChessAPI] Note: remember-me token was NOT rotated by this response.");
+  }
+
+  // Bounced to the login page = the token was refused. Keeping it around
+  // is actively harmful: CHESSCOM_REMEMBERME is single-use, so re-sending
+  // one the server has already rotated past looks like a stolen token
+  // rather than an expired one, and the usual defence is to drop every
+  // session for the account - which would keep killing sessions the user
+  // pastes in by hand, exactly the "I pasted a fresh cookie and it died
+  // again a few games later" symptom. Drop it and say plainly that BOTH
+  // cookies have to be recaptured.
+  if (location.indexOf("login") >= 0) {
+    Serial.println("[ChessAPI] Renewal was refused (redirected to login) - this CHESSCOM_REMEMBERME is dead.");
+    Serial.println("[ChessAPI] Discarding it so it can't be replayed. Recapture BOTH cookies in the webadmin.");
+    chessComRememberMe[0] = '\0';
+    refreshSessionCookies();
+    persistSessionCookies();
+    return false;
+  }
+
+  return true;  // "attempted and wasn't refused" - the caller's retry is the real success check
 }
 
 bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
@@ -141,6 +239,20 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
   }
 
   seedCookieJarIfNeeded();
+
+  // No session at all yet - either the user just saved a new
+  // CHESSCOM_REMEMBERME (which clears PHPSESSID on purpose) or this is a
+  // first boot. Mint one straight away instead of spending a guaranteed
+  // 401 to discover what we already know.
+  if (phpsessid[0] == '\0' && chessComRememberMe[0] != '\0') {
+    Serial.println("[ChessAPI] No PHPSESSID stored - minting one from CHESSCOM_REMEMBERME before polling.");
+    renewSession();
+  }
+
+  if (phpsessid[0] == '\0' && chessComRememberMe[0] == '\0') {
+    snprintf(statusOut, statusOutLen, "No chess.com cookie set");
+    return false;
+  }
 
   String body;
   bool gotBody = false;
@@ -164,6 +276,14 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
     http.setTimeout(10000);
 
     int httpCode = http.GET();
+
+    // Capture/persist any cookie the server rotated on THIS response,
+    // before doing anything else with the result - see
+    // syncJarToGlobalsIfChanged() for why losing one is what kills the
+    // session (and, for the remember-me token, what can invalidate every
+    // session on the account).
+    syncJarToGlobalsIfChanged();
+
     if (httpCode <= 0) {
       snprintf(statusOut, statusOutLen, "Timeout/conn error (%d)", httpCode);
       http.end();
