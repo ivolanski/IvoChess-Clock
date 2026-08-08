@@ -241,9 +241,17 @@ static void handleRoot() {
   html += "<h2>Lichess account</h2><div class='card'>";
   if (lichessToken[0] != '\0') {
     html += "<div class='row'>Connected as <span class='v'>" + String(lichessUsername) + "</span></div>";
-    html += "<form method='POST' action='/oauth/lichess/disconnect' style='margin-top:10px'>";
-    html += "<button type='submit'>Disconnect</button>";
-    html += "</form>";
+    // formaction/formmethod (HTML5), NOT a nested <form> - this whole
+    // block sits inside the page's one big settings <form action='/save'>
+    // (opened above, closed at the bottom). A <form> cannot legally
+    // nest inside another one; the previous version had exactly that,
+    // and browsers respond to it by silently closing the OUTER form
+    // right here - which pushed everything after this card (Display,
+    // LED colors, Data source, Webadmin access, and the real Save
+    // button) outside any <form> at all, so none of it could ever be
+    // submitted. formaction/formmethod is the standards-correct way for
+    // one button in a shared form to submit to a different endpoint.
+    html += "<button type='submit' formaction='/oauth/lichess/disconnect' formmethod='POST' style='margin-top:10px'>Disconnect</button>";
   } else {
     // Reuse an already-pending PKCE pair instead of generating a new one
     // on every render. Regenerating unconditionally broke the flow in
