@@ -23,6 +23,7 @@ static const char *STRINGS_EN[STR_COUNT] = {
   "Connecting to WiFi...",
   "Session expired",
   "Connection error",
+  "Restart for new game",
 };
 
 static const char *STRINGS_PT[STR_COUNT] = {
@@ -46,6 +47,7 @@ static const char *STRINGS_PT[STR_COUNT] = {
   "Conectando ao WiFi...",
   "Sessao expirada",
   "Erro de conexao",
+  "Reinicie p/ nova partida",
 };
 
 const char *T(StringId id) {

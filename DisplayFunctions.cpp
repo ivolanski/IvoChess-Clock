@@ -312,6 +312,12 @@ static void drawBottomBar(const char *noteLabel, const char *noteValue) {
 // not a small e-paper screen with wrapping disabled - see initDisplay()).
 static const char *statusHeadline(const ClockState &state) {
   if (!state.wifiConnected) return T(STR_WIFI_CONNECTING);
+  // Checked before apiOk/apiStatus: once GameDataSource.cpp gives up
+  // polling after WAITING_FOR_GAME_TIMEOUT_MS idle, this is the ONLY
+  // thing worth telling the user - a restart is required, no other
+  // status (stale "OK", old error) is still meaningful once polling has
+  // actually stopped.
+  if (state.waitingTimedOut) return T(STR_RESTART_FOR_GAME);
   if (state.apiOk) return T(STR_WAITING_FOR_GAME);
   if (strstr(state.apiStatus, "401") || strstr(state.apiStatus, "403")) return T(STR_SESSION_EXPIRED);
   return T(STR_CONNECTION_ERROR);

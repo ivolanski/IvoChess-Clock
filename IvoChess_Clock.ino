@@ -94,6 +94,7 @@ static ClockState state = {
 
   .apiStatus = "",
   .apiOk = false,
+  .waitingTimedOut = false,
 
   .hasGame = false,
   .players = {},

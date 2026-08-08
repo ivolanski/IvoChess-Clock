@@ -40,6 +40,15 @@ struct ClockState {
   char apiStatus[40];       // e.g. "OK", "HTTP 401", "No WiFi", "Timeout"
   bool apiOk;
 
+  // True once the "waiting for game" polling has given up after
+  // WAITING_FOR_GAME_TIMEOUT_MS of continuous idle time (see
+  // GameDataSource.cpp) - deliberately requires a physical restart to
+  // clear (it's a static local, not reset anywhere else), not a timer
+  // that quietly resumes on its own. Exists so a clock left on 24/7 with
+  // nobody playing doesn't poll the server forever - see the "screen
+  // stays on WAITING FOR GAME all day" concern this was built for.
+  bool waitingTimedOut;
+
   // --- current game ---
   bool hasGame;
   PlayerInfo players[2];

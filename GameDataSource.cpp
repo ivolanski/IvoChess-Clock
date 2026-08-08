@@ -8,6 +8,18 @@ DataSourceType currentDataSource = DATA_SOURCE_CHESSCOM_WIFI;
 static GameInfo currentGame;
 static unsigned long lastPollAttempt = 0;
 
+// Bounds how long the clock will keep polling /service/play/games while
+// genuinely idle (connected, no game) - see WAITING_FOR_GAME_TIMEOUT_MS.
+// idleSinceMs is reset to 'now' every time we're NOT in that idle state
+// (offline, or a game is active), so it always reflects the start of the
+// CURRENT idle streak, not idle time accumulated across separate streaks.
+// pollingStoppedUntilRestart is a static local, like everything else
+// here - it only clears on a real reboot, deliberately: this isn't a
+// longer sleep timer, it's meant to force a conscious restart before
+// polling resumes.
+static unsigned long idleSinceMs = 0;
+static bool pollingStoppedUntilRestart = false;
+
 // Tracks the live WebSocket connection across ticks so we can notice when
 // it's lost and fall back to polling - liveGameIsConnected() existed but
 // was never actually checked anywhere, so a dropped connection (network
@@ -24,11 +36,30 @@ static bool updateFromChessComWiFi(ClockState &state) {
   if (!state.wifiConnected) {
     snprintf(state.apiStatus, sizeof(state.apiStatus), "No WiFi");
     state.apiOk = false;
+    idleSinceMs = now;  // being offline isn't "idle waiting for a game" - don't count it against the timeout
     return false;
   }
 
   if (state.hasGame) {
+    idleSinceMs = now;  // reset the idle-streak clock; it starts counting again once this game ends
     return false;  // already watching live via gameDataSourceFastTick() - nothing to poll here
+  }
+
+  if (pollingStoppedUntilRestart) {
+    state.apiOk = false;
+    state.waitingTimedOut = true;
+    snprintf(state.apiStatus, sizeof(state.apiStatus), "Idle timeout - restart to resume");
+    return false;
+  }
+
+  if (now - idleSinceMs >= WAITING_FOR_GAME_TIMEOUT_MS) {
+    pollingStoppedUntilRestart = true;
+    state.apiOk = false;
+    state.waitingTimedOut = true;
+    snprintf(state.apiStatus, sizeof(state.apiStatus), "Idle timeout - restart to resume");
+    Serial.printf("[GameDataSource] No game found for %lu min - stopping polling until restart.\n",
+                  WAITING_FOR_GAME_TIMEOUT_MS / 60000UL);
+    return false;
   }
 
   if (now - lastPollAttempt < GAME_POLL_INTERVAL_MS) {
