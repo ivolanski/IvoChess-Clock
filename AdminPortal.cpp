@@ -3,6 +3,8 @@
 #include "Translations.h"
 #include "GameDataSource.h"
 #include "ChessApiFunctions.h"
+#include "LichessApiFunctions.h"
+#include "OAuthPkce.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -38,6 +40,19 @@ static DNSServer dnsServer;
 static ClockState *g_state = nullptr;
 static bool apMode = false;
 
+// The PKCE verifier+state generated for whichever "Connect to Lichess"
+// link was most recently rendered - RAM-only, checked/consumed by
+// handleLichessOAuthCallback() below. Not persisted: the whole flow
+// (render link -> browser goes to Lichess -> consent -> browser
+// redirected back here) is expected to complete within the same boot. A
+// second "Connect" click (page reload, second tab) simply overwrites
+// this and silently invalidates whichever flow was already in progress -
+// not a security hole (fails closed, see the callback's state check),
+// just something the user would notice as "that Connect link stopped
+// working" if they had two open at once.
+static PkceExchange pendingLichessPkce;
+static bool havePendingLichessPkce = false;
+
 // ---- small "#rrggbb" <-> {r,g,b} helpers, used for the LED color pickers ----
 static void hexToRgb(const String &hex, uint8_t out[3]) {
   if (hex.length() != 7 || hex[0] != '#') {
@@ -60,6 +75,8 @@ static void loadConfig() {
   prefs.getString(PREFS_KEY_PHPSESSID, DEFAULT_PHPSESSID).toCharArray(phpsessid, sizeof(phpsessid));
   prefs.getString("remember_me", DEFAULT_CHESSCOM_REMEMBERME).toCharArray(chessComRememberMe, sizeof(chessComRememberMe));
   prefs.getString("my_username", "").toCharArray(myUsername, sizeof(myUsername));
+  prefs.getString("lichess_tok", DEFAULT_LICHESS_TOKEN).toCharArray(lichessToken, sizeof(lichessToken));
+  prefs.getString("lichess_usr", "").toCharArray(lichessUsername, sizeof(lichessUsername));
   prefs.getString("wifi_ssid", DEFAULT_WIFI_SSID).toCharArray(wifiSSID, sizeof(wifiSSID));
   prefs.getString("wifi_pass", DEFAULT_WIFI_PASSWORD).toCharArray(wifiPassword, sizeof(wifiPassword));
   prefs.getString("admin_user", DEFAULT_WEBADMIN_USER).toCharArray(webAdminUser, sizeof(webAdminUser));
@@ -87,6 +104,8 @@ static void saveConfig() {
   prefs.putString(PREFS_KEY_PHPSESSID, phpsessid);
   prefs.putString("remember_me", chessComRememberMe);
   prefs.putString("my_username", myUsername);
+  prefs.putString("lichess_tok", lichessToken);
+  prefs.putString("lichess_usr", lichessUsername);
   prefs.putString("wifi_ssid", wifiSSID);
   prefs.putString("wifi_pass", wifiPassword);
   prefs.putString("admin_user", webAdminUser);
@@ -165,6 +184,17 @@ static bool checkAuth() {
   return true;
 }
 
+// Built from whatever host the browser actually used to reach this page
+// (server.hostHeader() - the mDNS name, a raw IP, whatever), NOT
+// hardcoded to MDNS_HOSTNAME. PKCE requires the exact same redirect_uri
+// string in both the authorize URL and the token exchange - if the user
+// loaded the page via IP but this were hardcoded to the mDNS name (or
+// vice versa), the token exchange would fail with an opaque
+// "invalid_grant" and nothing here would explain why.
+static String lichessRedirectUri() {
+  return "http://" + server.hostHeader() + LICHESS_OAUTH_CALLBACK_PATH;
+}
+
 static void handleRoot() {
   if (!checkAuth()) return;
 
@@ -199,6 +229,33 @@ static void handleRoot() {
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
   html += "</div>";
 
+  // Always rendered alongside the chess.com card, regardless of which
+  // data source is currently active - switching datasrc back and forth
+  // must never require reconnecting the OTHER service. handleSave()'s
+  // per-field hasArg()+length>0 guards already guarantee this for form
+  // fields; this card has no text fields to accidentally blank out in
+  // the first place (connect = OAuth redirect, disconnect = its own
+  // separate route), so there's nothing to lose here either way.
+  html += "<h2>Lichess account</h2><div class='card'>";
+  if (lichessToken[0] != '\0') {
+    html += "<div class='row'>Connected as <span class='v'>" + String(lichessUsername) + "</span></div>";
+    html += "<form method='POST' action='/oauth/lichess/disconnect' style='margin-top:10px'>";
+    html += "<button type='submit'>Disconnect</button>";
+    html += "</form>";
+  } else {
+    // A fresh PKCE pair per page render - the state.age comment on
+    // pendingLichessPkce above explains why an in-flight second attempt
+    // just silently supersedes the first rather than causing real harm.
+    pkceGenerate(pendingLichessPkce);
+    havePendingLichessPkce = true;
+    String authorizeUrl = lichessBuildAuthorizeUrl(pendingLichessPkce, lichessRedirectUri());
+    html += "<a href='" + authorizeUrl + "' style='display:block;text-align:center;padding:12px;border-radius:10px;"
+            "background:var(--accent);color:var(--accent-text);font-size:1rem;font-weight:600;"
+            "text-decoration:none;margin-top:18px'>Connect to Lichess</a>";
+    html += "<small>Opens Lichess's own login/consent page - the clock never sees your Lichess password.</small>";
+  }
+  html += "</div>";
+
   html += "<h2>Display</h2><div class='card'>";
   html += "<label>Language</label><select name='lang'>";
   html += "<option value='0'"; html += (currentLanguage == LANG_EN ? " selected" : ""); html += ">English</option>";
@@ -209,7 +266,17 @@ static void handleRoot() {
   html += "</div>";
 
   html += "<h2>Data source</h2><div class='card'>";
-  html += "<select name='datasrc'><option value='0' selected>Chess.com (live, over WiFi)</option></select>";
+  html += "<select name='datasrc'>";
+  html += "<option value='0'"; html += (currentDataSource == DATA_SOURCE_CHESSCOM_WIFI ? " selected" : ""); html += ">Chess.com (live, over WiFi)</option>";
+  // Only selectable once actually connected - picking a source with no
+  // credentials would just show "No Lichess token set" (see
+  // LichessApiFunctions.cpp's lichessFetchActiveGame()) instead of doing
+  // anything useful.
+  html += "<option value='2'";
+  html += (currentDataSource == DATA_SOURCE_LICHESS_WIFI ? " selected" : "");
+  html += (lichessToken[0] == '\0' ? " disabled" : "");
+  html += ">Lichess (live, over WiFi)" + String(lichessToken[0] == '\0' ? " - connect above first" : "") + "</option>";
+  html += "</select>";
   html += "</div>";
 
   html += "<h2>LED colors</h2><div class='card'>";
@@ -332,6 +399,91 @@ static void handleSave() {
   }
 }
 
+// GET /oauth/lichess/callback?code=...&state=... - Lichess redirects the
+// user's browser HERE after consent. MUST stay behind checkAuth() like
+// every other route: without it, anyone on the LAN who catches this URL
+// during the ~seconds the code is valid could bind their own Lichess
+// account to the device. Because this is a same-origin redirect back to
+// a host the browser already authenticated against moments earlier (to
+// load the "Connect" link in the first place), the cached Basic Auth
+// credentials are expected to just be resent automatically - but that's
+// exactly the kind of "works in Chrome desktop, breaks in Safari iOS"
+// behavior that needs confirming on real hardware/devices, not assumed.
+static void handleLichessOAuthCallback() {
+  if (!checkAuth()) return;
+
+  if (!havePendingLichessPkce) {
+    server.send(400, "text/html", "<html><body><h3>No Lichess connection was in progress. Go back and click Connect to Lichess again.</h3></body></html>");
+    return;
+  }
+  // Consumed unconditionally from here on (success or failure) - a stale
+  // pending exchange must never be reusable for a second attempt.
+  havePendingLichessPkce = false;
+
+  if (!server.hasArg("code") || !server.hasArg("state")) {
+    server.send(400, "text/html", "<html><body><h3>Lichess didn't return an authorization code. Go back and try again.</h3></body></html>");
+    return;
+  }
+  String state = server.arg("state");
+  if (state != String(pendingLichessPkce.state)) {
+    Serial.println("[AdminPortal] Lichess OAuth callback: state mismatch - discarding (stale or forged attempt).");
+    server.send(400, "text/html", "<html><body><h3>This Lichess connection attempt expired or doesn't match. Go back and click Connect to Lichess again.</h3></body></html>");
+    return;
+  }
+
+  String code = server.arg("code");  // never logged - see LichessApiFunctions.cpp's redaction discipline
+  char freshToken[LICHESS_TOKEN_MAX_LEN];
+  bool ok = lichessExchangeCodeForToken(code.c_str(), pendingLichessPkce.verifier, lichessRedirectUri(),
+                                         freshToken, sizeof(freshToken));
+  if (!ok) {
+    server.send(502, "text/html", "<html><body><h3>Lichess didn't accept that connection attempt. Go back and try again.</h3></body></html>");
+    return;
+  }
+
+  strncpy(lichessToken, freshToken, sizeof(lichessToken) - 1);
+  lichessToken[sizeof(lichessToken) - 1] = '\0';
+
+  char freshUsername[USERNAME_MAX_LEN];
+  if (lichessFetchUsername(lichessToken, freshUsername, sizeof(freshUsername))) {
+    strncpy(lichessUsername, freshUsername, sizeof(lichessUsername) - 1);
+    lichessUsername[sizeof(lichessUsername) - 1] = '\0';
+  }
+  // else: token is saved either way - the "connected as ___" line just
+  // stays blank until the next successful fetch (e.g. next boot), rather
+  // than treating a username-lookup hiccup as if the connection itself
+  // had failed.
+
+  saveConfig();
+  Serial.printf("[AdminPortal] Lichess connected as %s.\n", lichessUsername);
+
+  server.send(200, "text/html",
+              "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+              "<body><h3>Connected to Lichess.</h3></body></html>");
+}
+
+// POST /oauth/lichess/disconnect - forgets the token locally. Lichess's
+// API has no documented token-revocation endpoint (verified against its
+// OpenAPI spec), so this can't reach out and invalidate it server-side;
+// the webadmin text next to "Connect" should make clear that a user who
+// wants it fully revoked needs lichess.org/account/oauth/token.
+static void handleLichessDisconnect() {
+  if (!checkAuth()) return;
+
+  lichessToken[0] = '\0';
+  lichessUsername[0] = '\0';
+  if (currentDataSource == DATA_SOURCE_LICHESS_WIFI) {
+    // No credentials left to poll with - fall back rather than leave the
+    // clock stuck showing a Lichess-flavored error forever.
+    currentDataSource = DATA_SOURCE_CHESSCOM_WIFI;
+  }
+  saveConfig();
+  Serial.println("[AdminPortal] Lichess disconnected (token forgotten locally).");
+
+  server.send(200, "text/html",
+              "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+              "<body><h3>Disconnected.</h3></body></html>");
+}
+
 static void startApMode() {
   apMode = true;
   WiFi.mode(WIFI_AP);
@@ -382,6 +534,8 @@ void initAdminPortal(ClockState *statePtr) {
 
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on(LICHESS_OAUTH_CALLBACK_PATH, handleLichessOAuthCallback);
+  server.on("/oauth/lichess/disconnect", HTTP_POST, handleLichessDisconnect);
   server.onNotFound(handleRoot);  // any unknown URL falls back here - helps the phone "find" the captive portal
   server.begin();
 }
