@@ -2,6 +2,7 @@
 #include "config.h"
 #include "Translations.h"
 #include "AdminPortal.h"
+#include "GameDataSource.h"
 
 #include <ctype.h>
 
@@ -459,7 +460,7 @@ static void drawWaitingStatusContent(const ClockState &state) {
 // (admin-portal configurable) instead of squeezing the result into the
 // regular status screen's last line, per how prominent an outcome
 // deserves to be. Falls back to the neutral compact summary
-// (LiveGameClient.cpp's lastResultSummary) when myUsername isn't
+// (LiveGameClient.cpp's lastResultSummary) when activeMyUsername() isn't
 // configured and win/loss couldn't be resolved.
 static void drawResultContent(const ClockState &state) {
   const char *headline = nullptr;
@@ -495,15 +496,17 @@ static void drawResultContent(const ClockState &state) {
   }
 }
 
-// Which of state.players[0]/[1] is "me" (matches myUsername), so we can
-// always draw ourselves in the bottom row and the opponent on top - like
-// sitting across a real board. -1 if myUsername isn't set or doesn't
-// match either player (falls back to chess.com's own order: [0] top,
-// [1] bottom, same as before this existed).
+// Which of state.players[0]/[1] is "me" (matches activeMyUsername() -
+// whichever service's own username is currently relevant, see
+// GameDataSource.h), so we can always draw ourselves in the bottom row
+// and the opponent on top - like sitting across a real board. -1 if it
+// isn't set or doesn't match either player (falls back to the server's
+// own order: [0] top, [1] bottom, same as before this existed).
 static int myPlayerIndex(const ClockState &state) {
-  if (myUsername[0] == '\0') return -1;
+  const char *me = activeMyUsername();
+  if (me[0] == '\0') return -1;
   for (int i = 0; i < 2; i++) {
-    if (strcasecmp(state.players[i].username, myUsername) == 0) return i;
+    if (strcasecmp(state.players[i].username, me) == 0) return i;
   }
   return -1;
 }

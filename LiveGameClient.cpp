@@ -1,6 +1,7 @@
 #include "LiveGameClient.h"
 #include "config.h"
 #include "AdminPortal.h"
+#include "GameDataSource.h"
 #include "RSocketCodec.h"
 #include "Translations.h"
 
@@ -121,9 +122,10 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     }
 
     int meIdx = -1;
-    if (myUsername[0] != '\0') {
+    const char *me = activeMyUsername();
+    if (me[0] != '\0') {
       for (int i = 0; i < 2; i++) {
-        if (strcasecmp(g_state->players[i].username, myUsername) == 0) {
+        if (strcasecmp(g_state->players[i].username, me) == 0) {
           meIdx = i;
           break;
         }
@@ -136,7 +138,7 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     } else if (meIdx != -1) {
       outcome = (winnerIdx == meIdx) ? OUTCOME_WIN : OUTCOME_LOSS;
     }
-    // else: myUsername isn't configured, so win/loss can't be resolved -
+    // else: activeMyUsername() isn't configured, so win/loss can't be resolved -
     // stays OUTCOME_NONE (LedFunctions.cpp treats that as "idle/off"),
     // and the summary text below falls back to the neutral per-player form.
     g_state->lastGameOutcome = outcome;
@@ -175,7 +177,7 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
         snprintf(summary, sizeof(summary), "%s (%s)", headline, reason);
       }
     } else {
-      // Fallback (myUsername not configured): neutral "name: reason [rating]" per player.
+      // Fallback (activeMyUsername() not configured): neutral "name: reason [rating]" per player.
       int pos = 0;
       for (int i = 0; i < 2; i++) {
         const char *r = (i < (int)results.size()) ? (const char *)results[i] : nullptr;

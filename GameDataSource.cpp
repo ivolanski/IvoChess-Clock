@@ -2,8 +2,19 @@
 #include "config.h"
 #include "ChessApiFunctions.h"
 #include "LiveGameClient.h"
+#include "LichessApiFunctions.h"
+#include "LichessLiveClient.h"
+#include "AdminPortal.h"
 
 DataSourceType currentDataSource = DATA_SOURCE_CHESSCOM_WIFI;
+
+const char *activeMyUsername() {
+  switch (currentDataSource) {
+    case DATA_SOURCE_LICHESS_WIFI: return lichessUsername;
+    case DATA_SOURCE_CHESSCOM_WIFI:
+    default: return myUsername;
+  }
+}
 
 static GameInfo currentGame;
 static unsigned long lastPollAttempt = 0;
@@ -130,6 +141,123 @@ static bool updateFromChessComWiFi(ClockState &state) {
   return true;
 }
 
+// ---- source: Lichess via WiFi (HTTP to find the game, then NDJSON stream for live data) ----
+// Mirrors updateFromChessComWiFi()'s shape exactly (poll gate, idle
+// timeout, same-game-id reconnect logic) - kept as a fully separate
+// function/statics rather than sharing chess.com's, since only one
+// source is ever active at a time (currentDataSource is a single value,
+// not a set - see GameDataSource.h) but a user switching back and forth
+// between services must not have one source's in-flight state corrupt
+// the other's.
+static LichessGameInfo currentLichessGame;
+static unsigned long lastLichessPollAttempt = 0;
+static unsigned long lichessIdleSinceMs = 0;
+static bool lichessPollingStoppedUntilRestart = false;
+static bool lichessLiveWasConnected = false;
+static unsigned long lichessLiveConnectStartedAt = 0;
+
+static bool updateFromLichessWiFi(ClockState &state) {
+  unsigned long now = millis();
+
+  if (!state.wifiConnected) {
+    snprintf(state.apiStatus, sizeof(state.apiStatus), "No WiFi");
+    state.apiOk = false;
+    lichessIdleSinceMs = now;
+    return false;
+  }
+
+  if (state.hasGame) {
+    lichessIdleSinceMs = now;
+    return false;  // already watching live via gameDataSourceFastTick() - nothing to poll here
+  }
+
+  if (lichessPollingStoppedUntilRestart) {
+    state.apiOk = false;
+    state.waitingTimedOut = true;
+    snprintf(state.apiStatus, sizeof(state.apiStatus), "Idle timeout - restart to resume");
+    return false;
+  }
+
+  if (now - lichessIdleSinceMs >= WAITING_FOR_GAME_TIMEOUT_MS) {
+    lichessPollingStoppedUntilRestart = true;
+    state.apiOk = false;
+    state.waitingTimedOut = true;
+    snprintf(state.apiStatus, sizeof(state.apiStatus), "Idle timeout - restart to resume");
+    Serial.printf("[GameDataSource] No Lichess game found for %lu min - stopping polling until restart.\n",
+                  WAITING_FOR_GAME_TIMEOUT_MS / 60000UL);
+    return false;
+  }
+
+  if (now - lastLichessPollAttempt < LICHESS_GAME_POLL_INTERVAL_MS) {
+    return false;
+  }
+  lastLichessPollAttempt = now;
+
+  char previousGameId[sizeof(currentLichessGame.id)];
+  strncpy(previousGameId, currentLichessGame.id, sizeof(previousGameId));
+  previousGameId[sizeof(previousGameId) - 1] = '\0';
+
+  bool found = lichessFetchActiveGame(lichessToken, currentLichessGame, state.apiStatus, sizeof(state.apiStatus));
+  state.apiOk = (strncmp(state.apiStatus, "OK", 2) == 0);
+
+  if (!found) {
+    return false;
+  }
+
+  // Same reasoning as chess.com's reconnect-vs-new-game split
+  // (updateFromChessComWiFi() above): a reconnect after a live-connection
+  // blip must not reset the clocks/move count back to zero.
+  bool sameGameAsBefore = (previousGameId[0] != '\0') && (strcmp(previousGameId, currentLichessGame.id) == 0);
+
+  state.hasGame = true;
+
+  // Populate players[] right away from the discovery poll (white=[0],
+  // black=[1], matching the convention LichessLiveClient.cpp's gameFull
+  // handling also uses) rather than waiting for the stream's gameFull
+  // event to arrive - that event lands moments AFTER lichessLiveConnect()
+  // returns (it's parsed incrementally as bytes stream in, not
+  // synchronously during connect), so without this there'd be a brief
+  // window with state.hasGame=true but stale players[] left over from
+  // whatever game was on screen before. gameFull harmlessly overwrites
+  // these same fields moments later with its own (equally authoritative)
+  // copy.
+  int meIdx = currentLichessGame.myColorIsWhite ? 0 : 1;
+  int oppIdx = 1 - meIdx;
+  strncpy(state.players[meIdx].username, lichessUsername, USERNAME_MAX_LEN - 1);
+  state.players[meIdx].username[USERNAME_MAX_LEN - 1] = '\0';
+  state.players[meIdx].rating = currentLichessGame.myRating;
+  strncpy(state.players[oppIdx].username, currentLichessGame.opponent.username, USERNAME_MAX_LEN - 1);
+  state.players[oppIdx].username[USERNAME_MAX_LEN - 1] = '\0';
+  state.players[oppIdx].rating = currentLichessGame.opponent.rating;
+
+  if (sameGameAsBefore) {
+    Serial.printf("[GameDataSource] Reconnecting to Lichess game already in progress (id=%s) - keeping move %d / clocks as-is.\n",
+                  currentLichessGame.id, state.moveCount);
+    // moveCount/activePlayerIndex/clockBaseline* intentionally left alone - same reasoning as chess.com's reconnect path above.
+  } else {
+    Serial.printf("[GameDataSource] New Lichess game found: me(%s) vs %s(%d) - id=%s\n",
+                  currentLichessGame.myColorIsWhite ? "white" : "black",
+                  currentLichessGame.opponent.username, currentLichessGame.opponent.rating,
+                  currentLichessGame.id);
+    state.moveCount = 0;
+    state.activePlayerIndex = -1;
+    state.clockBaselineMs[0] = 0;
+    state.clockBaselineMs[1] = 0;
+    state.clockBaselineAtMs = now;
+
+    // Same defensive clear as chess.com's new-game path - see its
+    // comment above for why (fast back-to-back games, display priority).
+    state.resultDisplayUntilMs = 0;
+    state.lastResultSummary[0] = '\0';
+    state.lastGameOutcome = OUTCOME_NONE;
+  }
+
+  lichessLiveWasConnected = false;
+  lichessLiveConnectStartedAt = now;
+  lichessLiveConnect(currentLichessGame, lichessToken);
+  return true;
+}
+
 // ---- source: ChessConnect / DGT3000 via Bluetooth (NOT IMPLEMENTED YET) ----
 static bool updateFromChessConnectBLE(ClockState &state) {
   // TODO: implement once the ChessConnect source code arrives.
@@ -147,17 +275,19 @@ bool updateGameData(ClockState &state) {
   switch (currentDataSource) {
     case DATA_SOURCE_CHESSCONNECT_BLE:
       return updateFromChessConnectBLE(state);
+    case DATA_SOURCE_LICHESS_WIFI:
+      return updateFromLichessWiFi(state);
     case DATA_SOURCE_CHESSCOM_WIFI:
     default:
+      // Keeping chess.com as the default (not e.g. erroring) means a
+      // datasrc value this build doesn't recognize - a downgrade after
+      // Lichess support existed, say - degrades safely to the
+      // best-established path instead of doing nothing.
       return updateFromChessComWiFi(state);
   }
 }
 
-void gameDataSourceFastTick(ClockState &state) {
-  if (currentDataSource != DATA_SOURCE_CHESSCOM_WIFI || !state.hasGame) {
-    return;
-  }
-
+static void chessComFastTick(ClockState &state) {
   liveGameLoop(state);
 
   if (liveGameIsConnected()) {
@@ -191,5 +321,49 @@ void gameDataSourceFastTick(ClockState &state) {
     liveGameDisconnect();
     state.hasGame = false;
     liveWasConnected = false;
+  }
+}
+
+// Mirrors chessComFastTick() exactly, against LichessLiveClient.h's
+// equivalent functions instead - see updateFromLichessWiFi() above for
+// why this stays a fully separate function/statics rather than sharing
+// chess.com's.
+static void lichessFastTick(ClockState &state) {
+  lichessLiveLoop(state);
+
+  if (lichessLiveIsConnected()) {
+    lichessLiveWasConnected = true;
+
+    if (lichessLiveIsStale()) {
+      Serial.println("[GameDataSource] Lichess live connection stale (no lines received) - forcing reconnect.");
+      lichessLiveDisconnect();
+      state.hasGame = false;
+      lichessLiveWasConnected = false;
+    }
+    return;
+  }
+
+  bool gaveUpOnHandshake = !lichessLiveWasConnected && (millis() - lichessLiveConnectStartedAt > LIVE_CONNECT_GRACE_MS);
+  if (lichessLiveWasConnected || gaveUpOnHandshake) {
+    Serial.println("[GameDataSource] Lichess live connection lost/failed to establish - falling back to polling.");
+    lichessLiveDisconnect();
+    state.hasGame = false;
+    lichessLiveWasConnected = false;
+  }
+}
+
+void gameDataSourceFastTick(ClockState &state) {
+  if (!state.hasGame) {
+    return;
+  }
+  switch (currentDataSource) {
+    case DATA_SOURCE_LICHESS_WIFI:
+      lichessFastTick(state);
+      return;
+    case DATA_SOURCE_CHESSCOM_WIFI:
+      chessComFastTick(state);
+      return;
+    default:
+      return;  // e.g. DATA_SOURCE_CHESSCONNECT_BLE - no live client to pump
   }
 }

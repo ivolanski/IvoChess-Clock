@@ -24,7 +24,24 @@ extern char chessComRememberMe[];
 // across a real board, and by LiveGameClient to resolve win/loss).
 // Empty string = unknown, falls back to whatever order/wording chess.com
 // gave us.
+//
+// NOTE: don't read this directly outside ChessApiFunctions.cpp/
+// LiveGameClient.cpp - use GameDataSource.cpp's activeMyUsername()
+// instead, which returns the right one of this/lichessUsername for
+// whichever data source is currently active. Reading this global
+// directly is exactly the bug that made Lichess games silently show
+// wrong LED colors/win-loss the first time this was built - see
+// activeMyUsername()'s own comment in GameDataSource.h.
 extern char myUsername[];
+
+// Lichess's equivalent of chessComRememberMe/myUsername above - a long-
+// lived OAuth access token (captured via the webadmin's "Connect to
+// Lichess" PKCE flow, see AdminPortal.cpp's /oauth/lichess/callback
+// route) and the account's own username. Unlike chess.com's cookie,
+// Lichess tokens don't rotate and don't need silent renewal - see
+// LichessApiFunctions.h for why. Empty lichessToken = not connected.
+extern char lichessToken[];
+extern char lichessUsername[];
 
 // LED colors (see LedFunctions.cpp) - all configurable from the admin
 // portal, defaults come from config.h (DEFAULT_LED_*) the first time the

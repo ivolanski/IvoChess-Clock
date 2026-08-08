@@ -13,6 +13,8 @@
 char phpsessid[PHPSESSID_MAX_LEN] = DEFAULT_PHPSESSID;
 char chessComRememberMe[CHESSCOM_REMEMBERME_MAX_LEN] = DEFAULT_CHESSCOM_REMEMBERME;
 char myUsername[USERNAME_MAX_LEN] = "";
+char lichessToken[LICHESS_TOKEN_MAX_LEN] = DEFAULT_LICHESS_TOKEN;
+char lichessUsername[USERNAME_MAX_LEN] = "";
 
 uint8_t ledColorNoWifi[3];
 uint8_t ledColorLowBattery[3];

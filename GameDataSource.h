@@ -11,9 +11,24 @@
 enum DataSourceType {
   DATA_SOURCE_CHESSCOM_WIFI = 0,
   DATA_SOURCE_CHESSCONNECT_BLE = 1,  // not implemented yet - stub
+  DATA_SOURCE_LICHESS_WIFI = 2,
 };
 
 extern DataSourceType currentDataSource;
+
+// The account username to match against state.players[].username for
+// "who is me" (win/loss, whose-turn LED color) - chess.com's myUsername
+// or Lichess's lichessUsername (both in AdminPortal.h), whichever
+// currentDataSource is actually active right now.
+//
+// Use this instead of reading myUsername/lichessUsername directly.
+// DisplayFunctions.cpp and LedFunctions.cpp used to read the chess.com
+// global directly, which - since GameDataSource.h's whole point is that
+// "Display/LEDs/Admin only know about ClockState" - was a real bug once
+// Lichess became a second source: a Lichess game would keep comparing
+// player names against the chess.com account's username, silently
+// showing wrong LED colors and win/loss.
+const char *activeMyUsername();
 
 void initGameDataSource();
 

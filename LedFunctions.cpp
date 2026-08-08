@@ -1,6 +1,7 @@
 #include "LedFunctions.h"
 #include "config.h"
 #include "AdminPortal.h"
+#include "GameDataSource.h"
 #include "TimeFunctions.h"
 
 #include <Adafruit_NeoPixel.h>
@@ -28,11 +29,14 @@ void clearLEDs() {
 // Which of state.players[0]/[1] is "me" - same match DisplayFunctions.cpp
 // uses to decide who goes in the bottom row, so the "your turn" LED color
 // lines up with what's actually shown on screen instead of being tied to
-// chess.com's raw (arbitrary) player order.
+// the server's raw (arbitrary) player order. Uses activeMyUsername()
+// (GameDataSource.h), not a hardcoded chess.com global - see its comment
+// for why that distinction matters once more than one data source exists.
 static int myPlayerIndex(const ClockState &state) {
-  if (myUsername[0] == '\0') return -1;
+  const char *me = activeMyUsername();
+  if (me[0] == '\0') return -1;
   for (int i = 0; i < 2; i++) {
-    if (strcasecmp(state.players[i].username, myUsername) == 0) return i;
+    if (strcasecmp(state.players[i].username, me) == 0) return i;
   }
   return -1;
 }
@@ -61,7 +65,7 @@ void updateLEDs(const ClockState &state) {
     } else if (meIdx != -1) {
       memcpy(baseColor, (state.activePlayerIndex == meIdx) ? ledColorMyTurn : ledColorOpponentTurn, 3);
     } else {
-      // myUsername isn't configured - fall back to raw index so there's
+      // activeMyUsername() isn't configured - fall back to raw index so there's
       // still a turn indicator, just not tied to "me" specifically.
       memcpy(baseColor, (state.activePlayerIndex == 0) ? ledColorMyTurn : ledColorOpponentTurn, 3);
     }
