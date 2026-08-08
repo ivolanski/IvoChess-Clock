@@ -40,16 +40,17 @@ static DNSServer dnsServer;
 static ClockState *g_state = nullptr;
 static bool apMode = false;
 
-// The PKCE verifier+state generated for whichever "Connect to Lichess"
-// link was most recently rendered - RAM-only, checked/consumed by
-// handleLichessOAuthCallback() below. Not persisted: the whole flow
+// The PKCE verifier+state for the current in-flight "Connect to Lichess"
+// attempt - RAM-only, generated once and reused across renders until
+// handleLichessOAuthCallback() consumes it (success or failure), NOT
+// regenerated on every page load - see the render site (handleRoot())
+// for why that distinction matters (a naive "fresh pair every render"
+// approach broke in practice: the browser's automatic /favicon.ico
+// request re-renders this same page in the background and would
+// silently invalidate the pending exchange before the user's actual
+// click completes). Not persisted across a reboot: the whole flow
 // (render link -> browser goes to Lichess -> consent -> browser
-// redirected back here) is expected to complete within the same boot. A
-// second "Connect" click (page reload, second tab) simply overwrites
-// this and silently invalidates whichever flow was already in progress -
-// not a security hole (fails closed, see the callback's state check),
-// just something the user would notice as "that Connect link stopped
-// working" if they had two open at once.
+// redirected back here) is expected to complete within the same boot.
 static PkceExchange pendingLichessPkce;
 static bool havePendingLichessPkce = false;
 
@@ -243,11 +244,24 @@ static void handleRoot() {
     html += "<button type='submit'>Disconnect</button>";
     html += "</form>";
   } else {
-    // A fresh PKCE pair per page render - the state.age comment on
-    // pendingLichessPkce above explains why an in-flight second attempt
-    // just silently supersedes the first rather than causing real harm.
-    pkceGenerate(pendingLichessPkce);
-    havePendingLichessPkce = true;
+    // Reuse an already-pending PKCE pair instead of generating a new one
+    // on every render. Regenerating unconditionally broke the flow in
+    // practice: browsers auto-request /favicon.ico right after loading
+    // any page, that request falls through onNotFound() to THIS SAME
+    // handleRoot() (checkAuth() passes - same-origin, cached Basic Auth),
+    // and used to silently overwrite the pending exchange with a second
+    // PKCE pair moments after the real page (and the "Connect" link the
+    // user actually sees and clicks) had already been sent with the
+    // first one - guaranteeing a state mismatch on the callback. Only
+    // generating a fresh pair when none is pending makes the link stay
+    // valid across any number of incidental extra page loads (favicon,
+    // a second tab, a reload) until it's actually used (success or
+    // failure both clear havePendingLichessPkce - see
+    // handleLichessOAuthCallback()).
+    if (!havePendingLichessPkce) {
+      pkceGenerate(pendingLichessPkce);
+      havePendingLichessPkce = true;
+    }
     String authorizeUrl = lichessBuildAuthorizeUrl(pendingLichessPkce, lichessRedirectUri());
     html += "<a href='" + authorizeUrl + "' style='display:block;text-align:center;padding:12px;border-radius:10px;"
             "background:var(--accent);color:var(--accent-text);font-size:1rem;font-weight:600;"
@@ -484,6 +498,17 @@ static void handleLichessDisconnect() {
               "<body><h3>Disconnected.</h3></body></html>");
 }
 
+// Browsers automatically request this right after loading any page.
+// Without an explicit route it fell through onNotFound() to handleRoot()
+// - harmless in itself, but wasteful (renders the whole settings page
+// just to be discarded) and was the trigger for the PKCE-overwrite bug
+// fixed above. A plain 204 stops the request from reaching handleRoot()
+// at all, which also means it no longer needs checkAuth() - there's
+// nothing here worth protecting.
+static void handleFavicon() {
+  server.send(204);
+}
+
 static void startApMode() {
   apMode = true;
   WiFi.mode(WIFI_AP);
@@ -534,6 +559,7 @@ void initAdminPortal(ClockState *statePtr) {
 
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on("/favicon.ico", handleFavicon);
   server.on(LICHESS_OAUTH_CALLBACK_PATH, handleLichessOAuthCallback);
   server.on("/oauth/lichess/disconnect", HTTP_POST, handleLichessDisconnect);
   server.onNotFound(handleRoot);  // any unknown URL falls back here - helps the phone "find" the captive portal
