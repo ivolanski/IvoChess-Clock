@@ -5,6 +5,7 @@
 #include "ChessApiFunctions.h"
 #include "LichessApiFunctions.h"
 #include "OAuthPkce.h"
+#include "Favicon.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -500,13 +501,15 @@ static void handleLichessDisconnect() {
 
 // Browsers automatically request this right after loading any page.
 // Without an explicit route it fell through onNotFound() to handleRoot()
-// - harmless in itself, but wasteful (renders the whole settings page
-// just to be discarded) and was the trigger for the PKCE-overwrite bug
-// fixed above. A plain 204 stops the request from reaching handleRoot()
-// at all, which also means it no longer needs checkAuth() - there's
-// nothing here worth protecting.
+// - which was the actual trigger for the PKCE-overwrite bug fixed above
+// (see pendingLichessPkce's comment) - and served no icon either.
+// Serving the real favicon (Favicon.h, same source image as the
+// website's) here fixes both: the browser tab gets a proper icon, and
+// the request no longer reaches handleRoot() at all. No checkAuth() -
+// there's nothing here worth protecting, and browsers request this
+// before any login has necessarily happened.
 static void handleFavicon() {
-  server.send(204);
+  server.send_P(200, PSTR("image/png"), (PGM_P)FAVICON_PNG, FAVICON_PNG_LEN);
 }
 
 static void startApMode() {
