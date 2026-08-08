@@ -70,6 +70,16 @@
 #define GAMES_ENDPOINT_URL "https://www.chess.com/service/play/games"
 #define GAME_POLL_INTERVAL_MS 5000
 
+// If nobody starts a game for this long while the clock sits idle, stop
+// polling /service/play/games entirely instead of hitting it every
+// GAME_POLL_INTERVAL_MS forever - a clock left on 24/7 with no one
+// playing has no business generating ~17k requests/day indefinitely.
+// Deliberately requires a physical restart to resume (see
+// GameDataSource.cpp) rather than a timer that quietly starts polling
+// again on its own - the point is to force a conscious "yes, I'm about
+// to play" action, not just a longer sleep.
+#define WAITING_FOR_GAME_TIMEOUT_MS (10UL * 60UL * 1000UL)
+
 // ---------------------------------------------------------------------------
 // LICHESS API (OAuth 2.0 + PKCE - see OAuthPkce.h/.cpp, LichessApiFunctions.h/.cpp)
 // ---------------------------------------------------------------------------

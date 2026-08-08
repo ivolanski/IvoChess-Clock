@@ -27,6 +27,7 @@ enum StringId {
   STR_WIFI_CONNECTING,
   STR_SESSION_EXPIRED,
   STR_CONNECTION_ERROR,
+  STR_RESTART_FOR_GAME,
   STR_COUNT  // always last - marks the size of the tables
 };
 
