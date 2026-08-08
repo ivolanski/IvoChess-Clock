@@ -190,6 +190,20 @@ static void applyClockUpdate(long wtimeMs, long btimeMs, int moveCount) {
   lastClocks[1] = newClocks[1];
   lastMoveCountSeen = moveCount;
 
+  // Both real clock values, every time - not just clockBaselineMs[].
+  // DisplayFunctions.cpp draws from players[i].clockMs directly (see
+  // drawPlayerHalf()), and IvoChess_Clock.ino's between-events local
+  // extrapolation tick only ever touches the CURRENTLY ACTIVE player's
+  // clockMs (it's a single-clock ticking-down fallback, not a general
+  // resync) - so the inactive side's clockMs never gets refreshed unless
+  // something sets it directly on every real update, same as chess.com's
+  // LiveGameClient.cpp already does. Missing this line is exactly why
+  // the opponent's clock showed as stuck at zero: clockBaselineMs[] was
+  // being updated correctly, but nothing ever copied it into the field
+  // the display actually reads.
+  g_state->players[0].clockMs = newClocks[0];
+  g_state->players[1].clockMs = newClocks[1];
+
   g_state->clockBaselineMs[0] = newClocks[0];
   g_state->clockBaselineMs[1] = newClocks[1];
   g_state->clockBaselineAtMs = millis();
