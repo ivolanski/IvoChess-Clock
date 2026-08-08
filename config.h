@@ -70,6 +70,30 @@
 #define GAMES_ENDPOINT_URL "https://www.chess.com/service/play/games"
 #define GAME_POLL_INTERVAL_MS 5000
 
+// ---------------------------------------------------------------------------
+// LICHESS API (OAuth 2.0 + PKCE - see OAuthPkce.h/.cpp, LichessApiFunctions.h/.cpp)
+// ---------------------------------------------------------------------------
+// "Choose any unique client id" - Lichess explicitly supports unregistered
+// public clients, no registration/approval step needed (unlike chess.com's
+// OAuth, which is a separate pending application).
+#define LICHESS_OAUTH_CLIENT_ID "ivochess-clock"
+#define LICHESS_AUTHORIZE_URL "https://lichess.org/oauth"
+#define LICHESS_TOKEN_URL "https://lichess.org/api/token"
+#define LICHESS_OAUTH_SCOPE "board:play"
+#define LICHESS_OAUTH_CALLBACK_PATH "/oauth/lichess/callback"
+
+#define LICHESS_PLAYING_ENDPOINT_URL "https://lichess.org/api/account/playing"
+// %s is the gameId, filled in at request time.
+#define LICHESS_GAME_STREAM_URL_FMT "https://lichess.org/api/board/game/stream/%s"
+#define LICHESS_GAME_POLL_INTERVAL_MS 5000  // matches GAME_POLL_INTERVAL_MS's cadence/reasoning
+
+// Access tokens are long-lived (~1 year per Lichess's own docs) and
+// Lichess does NOT support refresh tokens at all - so unlike
+// CHESSCOM_REMEMBERME_MAX_LEN there is no separate "renewal token" size
+// to define here, just the one bearer token.
+#define LICHESS_TOKEN_MAX_LEN 256
+#define DEFAULT_LICHESS_TOKEN ""
+
 // RSocket (live game data over WebSocket) - values match what the
 // validated Python prototype used against the real chess.com server.
 #define RSOCKET_KEEPALIVE_MS 8000
