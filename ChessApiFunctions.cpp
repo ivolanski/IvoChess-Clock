@@ -377,3 +377,14 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
 
   return true;
 }
+
+bool testChessComSession() {
+  GameInfo dummy;
+  char status[80];
+  if (fetchActiveGame(dummy, status, sizeof(status))) return true;
+  // fetchActiveGame() returns false both for a genuinely dead session
+  // (401/403/no cookie/timeout/...) and for a perfectly valid one that
+  // simply has no game running right now ("OK (no game)") - only the
+  // latter counts as a working session here.
+  return strncmp(status, "OK", 2) == 0;
+}

@@ -149,8 +149,8 @@ static const char *wifiQualityLabel(bool connected, int rssi) {
 // needed to load it, including on the setup hotspot with no WiFi at all).
 static const char PAGE_STYLE[] =
     "<style>"
-    ":root{--bg:#f4f5f7;--card:#ffffff;--text:#1c1e21;--muted:#6b7280;--border:#e2e4e9;--accent:#2563eb;--accent-text:#ffffff;--ok:#16a34a;--warn:#d97706;}"
-    "@media (prefers-color-scheme: dark){:root{--bg:#15161a;--card:#1f2126;--text:#e7e9ea;--muted:#9aa0a8;--border:#33363d;--accent:#3b82f6;--accent-text:#ffffff;--ok:#4ade80;--warn:#fbbf24;}}"
+    ":root{--bg:#f4f5f7;--card:#ffffff;--text:#1c1e21;--muted:#6b7280;--border:#e2e4e9;--accent:#2563eb;--accent-text:#ffffff;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;}"
+    "@media (prefers-color-scheme: dark){:root{--bg:#15161a;--card:#1f2126;--text:#e7e9ea;--muted:#9aa0a8;--border:#33363d;--accent:#3b82f6;--accent-text:#ffffff;--ok:#4ade80;--warn:#fbbf24;--bad:#f87171;}}"
     "*{box-sizing:border-box;}"
     "body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:16px;max-width:480px;margin-left:auto;margin-right:auto;}"
     "h1{font-size:1.3rem;margin:0 0 4px;}"
@@ -171,6 +171,7 @@ static const char PAGE_STYLE[] =
     ".pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600;}"
     ".pill.ok{background:rgba(22,163,74,.15);color:var(--ok);}"
     ".pill.warn{background:rgba(217,119,6,.15);color:var(--warn);}"
+    ".pill.bad{background:rgba(220,38,38,.15);color:var(--bad);}"
     "</style>";
 
 // HTTP Basic Auth, checked on every admin route - guards WiFi
@@ -221,9 +222,32 @@ static void handleRoot() {
   html += "</div>";
 
   html += "<h2>Chess.com account</h2><div class='card'>";
+  // Tested live on every page load (a real request, not a cached guess) -
+  // see testChessComSession(). Only actually run it when there's a WiFi
+  // connection to run it over and a cookie worth testing - otherwise the
+  // result would just be "No WiFi"/no-cookie noise dressed up as a broken
+  // session.
+  html += "<div class='row'>Session status ";
+  if (apMode || WiFi.status() != WL_CONNECTED) {
+    html += "<span class='pill warn'>No WiFi</span>";
+  } else if (phpsessid[0] == '\0' && chessComRememberMe[0] == '\0') {
+    html += "<span class='pill warn'>Not connected</span>";
+  } else if (testChessComSession()) {
+    html += "<span class='pill ok'>Valid</span>";
+  } else {
+    html += "<span class='pill bad'>Invalid - recapture cookie</span>";
+  }
+  html += "</div>";
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
   html += "<small>Step-by-step to get your remember me at: ivochess.ivolanski.com</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
+  if (phpsessid[0] != '\0' || chessComRememberMe[0] != '\0') {
+    // formaction/formmethod (HTML5), not a nested <form> - same reasoning
+    // as the Lichess "Disconnect" button below. Separate from leaving the
+    // cookie field empty on Save, which deliberately KEEPS the current
+    // cookie - this is the explicit "throw it away" action instead.
+    html += "<button type='submit' formaction='/chesscom/invalidate' formmethod='POST' style='margin-top:14px;background:var(--bad)'>Forget cookie</button>";
+  }
   html += "</div>";
 
   // Always rendered alongside the chess.com card, regardless of which
@@ -479,6 +503,35 @@ static void handleLichessOAuthCallback() {
               "<body><h3>Connected to Lichess.</h3></body></html>");
 }
 
+// POST /chesscom/invalidate - explicit "forget this session" action,
+// distinct from the Save button leaving the cookie field empty (which
+// deliberately KEEPS whatever's currently stored - see handleSave()). This
+// is a LOCAL wipe only (e.g. before handing/selling the physical clock to
+// someone else) - chess.com has no cookie-revocation endpoint to call, so
+// the remember-me token itself is still whatever it was server-side; the
+// point here is just that this device no longer holds a copy of it. The
+// next fetchActiveGame()/testChessComSession() naturally reports "No
+// chess.com cookie set" until a new one is pasted.
+static void handleChessComInvalidate() {
+  if (!checkAuth()) return;
+
+  phpsessid[0] = '\0';
+  chessComRememberMe[0] = '\0';
+  refreshSessionCookies();
+  saveConfig();
+  if (currentDataSource == DATA_SOURCE_CHESSCOM_WIFI) {
+    // No credentials left to poll with - fall back rather than leave the
+    // clock stuck showing a chess.com-flavored error forever. Mirrors the
+    // same fallback handleLichessDisconnect() does the other way around.
+    currentDataSource = DATA_SOURCE_LICHESS_WIFI;
+  }
+  Serial.println("[AdminPortal] Chess.com cookie forgotten locally (no server-side revocation - chess.com has no such endpoint).");
+
+  server.send(200, "text/html",
+              "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+              "<body><h3>Forgotten.</h3></body></html>");
+}
+
 // POST /oauth/lichess/disconnect - forgets the token locally. Lichess's
 // API has no documented token-revocation endpoint (verified against its
 // OpenAPI spec), so this can't reach out and invalidate it server-side;
@@ -565,6 +618,7 @@ void initAdminPortal(ClockState *statePtr) {
 
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
+  server.on("/chesscom/invalidate", HTTP_POST, handleChessComInvalidate);
   server.on("/favicon.ico", handleFavicon);
   server.on(LICHESS_OAUTH_CALLBACK_PATH, handleLichessOAuthCallback);
   server.on("/oauth/lichess/disconnect", HTTP_POST, handleLichessDisconnect);

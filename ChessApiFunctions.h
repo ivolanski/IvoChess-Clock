@@ -26,4 +26,11 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen);
 // whatever was seeded at boot until the next restart.
 void refreshSessionCookies();
 
+// Live pass/fail check of the saved chess.com session - does a real request
+// (same renewal-and-retry path as fetchActiveGame(), including minting a
+// fresh PHPSESSID from CHESSCOM_REMEMBERME if needed) and reports whether
+// the session actually works right now, discarding any game found. Used by
+// the webadmin to show a green/red status on page load - see handleRoot().
+bool testChessComSession();
+
 #endif  // CHESS_API_FUNCTIONS_H
