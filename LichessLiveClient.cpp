@@ -235,6 +235,12 @@ static void applyGameOver(const char *status, const char *winnerColor) {
     int oppIdx = 1 - meIdx;
     strncpy(g_state->lastOpponentUsername, g_state->players[oppIdx].username, USERNAME_MAX_LEN - 1);
     g_state->lastOpponentUsername[USERNAME_MAX_LEN - 1] = '\0';
+    g_state->lastMyRating = g_state->players[meIdx].rating;
+    g_state->lastOpponentRating = g_state->players[oppIdx].rating;
+    g_state->lastPlayerRatingsKnown = true;
+  } else {
+    g_state->lastOpponentUsername[0] = '\0';
+    g_state->lastPlayerRatingsKnown = false;
   }
   g_state->lastRatingKnown = false;  // Lichess's board stream doesn't carry a post-game rating delta
 

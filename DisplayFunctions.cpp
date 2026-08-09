@@ -499,13 +499,21 @@ static void drawResultContent(const ClockState &state) {
     printCentered(reasonLine, 64);
   }
   if (state.lastOpponentUsername[0] != '\0') {
-    char vsLine[48];
-    snprintf(vsLine, sizeof(vsLine), "vs %s", state.lastOpponentUsername);
+    char vsLine[56];
+    if (state.lastPlayerRatingsKnown) {
+      snprintf(vsLine, sizeof(vsLine), "vs %s (%d)", state.lastOpponentUsername, state.lastOpponentRating);
+    } else {
+      snprintf(vsLine, sizeof(vsLine), "vs %s", state.lastOpponentUsername);
+    }
     printCentered(vsLine, 84);
   }
-  if (state.lastRatingKnown) {
-    char ratingLine[24];
-    snprintf(ratingLine, sizeof(ratingLine), "%+d", state.lastRatingDelta);
+  if (state.lastPlayerRatingsKnown) {
+    char ratingLine[32];
+    if (state.lastRatingKnown) {
+      snprintf(ratingLine, sizeof(ratingLine), "You: %d (%+d)", state.lastMyRating, state.lastRatingDelta);
+    } else {
+      snprintf(ratingLine, sizeof(ratingLine), "You: %d", state.lastMyRating);
+    }
     printCentered(ratingLine, 106);
   }
 }

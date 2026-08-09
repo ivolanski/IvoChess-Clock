@@ -157,8 +157,12 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     if (opponentIdx != -1) {
       strncpy(g_state->lastOpponentUsername, g_state->players[opponentIdx].username, sizeof(g_state->lastOpponentUsername) - 1);
       g_state->lastOpponentUsername[sizeof(g_state->lastOpponentUsername) - 1] = '\0';
+      g_state->lastMyRating = g_state->players[meIdx].rating;
+      g_state->lastOpponentRating = g_state->players[opponentIdx].rating;
+      g_state->lastPlayerRatingsKnown = true;
     } else {
       g_state->lastOpponentUsername[0] = '\0';
+      g_state->lastPlayerRatingsKnown = false;
     }
 
     g_state->lastRatingKnown = (meIdx != -1 && meIdx < (int)ratings.size());

@@ -60,6 +60,16 @@ struct ClockState {
   int lastRatingDelta;           // my rating change, only meaningful if lastRatingKnown
   bool lastRatingKnown;          // false when myUsername wasn't configured/matched - don't show a rating delta of 0 as if it were real
   char lastOpponentUsername[USERNAME_MAX_LEN];
+  // Both players' ratings as last known going into the result screen (from
+  // players[] at the moment the game ended - chess.com's post-game "results"
+  // event doesn't carry the opponent's new rating, and Lichess's board stream
+  // doesn't carry rating deltas at all, so this is the pre-result rating on
+  // both platforms rather than a post-result one). Only meaningful if
+  // lastPlayerRatingsKnown (needs activeMyUsername() to have resolved which
+  // side is "me").
+  int lastMyRating;
+  int lastOpponentRating;
+  bool lastPlayerRatingsKnown;
   unsigned long resultDisplayUntilMs;  // 0 = not showing a result right now; else millis() timestamp until which the result screen stays up
 
   // Anchor for local clock extrapolation between RSocket updates: the
