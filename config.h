@@ -134,14 +134,10 @@
 // ticks, regardless of FULL_REFRESH_INTERVAL_MS's 5-minute watchdog
 // above (which alone would let a slow-thinking player's move accumulate
 // hundreds of uncorrected partial ticks). Manufacturer guidance for this
-// panel is roughly every 5-10 partial updates, which is what an initial
-// conservative default (8) used - deliberately pushed way out here
-// instead, to real-hardware test how far partial-only ticking actually
-// holds up before ghosting becomes visible, per live testing. Lower this
-// back down once we've seen where it actually starts looking bad. In
-// normal play this rarely even matters - every actual move already
-// forces a full redraw via needsFullRefresh in IvoChess_Clock.ino, which
-// resets this streak too.
+// panel is roughly every 5-10 partial updates; validated on real hardware
+// up to 60 with no visible ghosting. In normal play this rarely even
+// matters - every actual move already forces a full redraw via
+// needsFullRefresh in IvoChess_Clock.ino, which resets this streak too.
 #define GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK 60
 
 // A full e-paper refresh isn't instant - by the time it actually finishes

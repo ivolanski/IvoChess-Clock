@@ -276,13 +276,12 @@ static void drawTopStatusBar(const ClockState &state) {
 // 11px/char) - it and the note CANNOT share one row at any usable size
 // without overlapping, so the note gets its own (visibly smaller) row.
 #define FOOTER_NOTE_GAP 4  // gap between the small note's bottom edge and the separator line below it
-#define FOOTER_Y_ADJUST 6  // shifts the whole footer row (note + site URL) down a little, per live testing (was 4, +2 more)
+#define FOOTER_Y_ADJUST 6  // shifts the whole footer row (note + site URL) down slightly for visual balance
 #define BOTTOM_SEP_Y 100
-// The separator LINE moved independently of the note/URL zone above it
-// (BOTTOM_SEP_Y stays their reference point) - per live testing, sitting
-// it a bit further from the note read better visually. Kept as its own
-// constant rather than just bumping BOTTOM_SEP_Y so the note/URL don't
-// drift along with it.
+// The separator LINE sits independently of the note/URL zone above it
+// (BOTTOM_SEP_Y stays their reference point) - kept as its own constant,
+// rather than just moving BOTTOM_SEP_Y, so the note/URL don't drift along
+// with it if the line's position changes again.
 #define FOOTER_LINE_Y (BOTTOM_SEP_Y + 4)
 #define MESSAGE_ZONE_BOTTOM 84  // leaves room above the footer note for its height + FOOTER_NOTE_GAP
 
@@ -373,13 +372,12 @@ static void printCenteredIn(const char *text, int xLeft, int width, int y) {
 #define GAME_DIVIDER_X (SCREEN_WIDTH / 2)
 #define GAME_CONTENT_TOP (STATUS_BAR_BASELINE + 6)  // just below the top bar's separator line
 #define GAME_HALF_NAME_Y 34
-#define GAME_HALF_CLOCK_Y 86  // was 84, +2 per live testing - still leaves a clear gap above the footer note row
+#define GAME_HALF_CLOCK_Y 86  // leaves a clear gap above the footer note row
 // Rating sits in the gap between the name and the clock, not at a fixed
 // y - GAME_NAME_BOTTOM clears the name's descenders (9pt, ~5px past its
-// baseline) plus a bit of extra breathing room (the rating/triangle read
-// as crowding right into the name without it, per live testing) and
-// GAME_CLOCK_TOP is the 18pt clock font's own ascent (~21px above its
-// baseline), so the zone tracks both neighbors exactly.
+// baseline) plus a bit of extra breathing room, and GAME_CLOCK_TOP is the
+// 18pt clock font's own ascent (~21px above its baseline), so the zone
+// tracks both neighbors exactly.
 #define GAME_NAME_DESCENDER_CLEARANCE 5
 #define GAME_NAME_EXTRA_GAP 6
 #define GAME_NAME_BOTTOM (GAME_HALF_NAME_Y + GAME_NAME_DESCENDER_CLEARANCE + GAME_NAME_EXTRA_GAP)
@@ -444,10 +442,10 @@ static int drawClockDigits(int xLeft, int width, long clockMs) {
 // redraw and the partial-window move update (drawGameMovePartial() below)
 // draw pixel-identically instead of two copies drifting apart.
 // Pulls the rating/triangle row up from the exact midpoint between the
-// name and the clock - centered was crowding the clock above it, per
-// live testing (GAME_NAME_BOTTOM was already pushed down once to fix the
-// opposite problem, crowding the name - see its own comment).
-#define GAME_RATING_Y_BIAS 5  // nudged down 2px from 7 for a tighter/better-aligned look, per live testing
+// name and the clock - dead center crowds the clock above it (GAME_NAME_BOTTOM
+// already accounts for the opposite problem, crowding the name - see its
+// own comment).
+#define GAME_RATING_Y_BIAS 5
 // The built-in font at size 1 read as too small on real hardware - size 2
 // is the closest bigger step available (there's no custom font between
 // the built-in one and 9pt - see printCenteredInSmall()'s comment).
@@ -658,18 +656,15 @@ static bool clockBoxesMeasured = false;
 // is the axis that lands on the panel's physical byte-addressed axis -
 // see the block comment on drawGameMovePartial() below for the full
 // derivation) get silently ROUNDED to an 8px boundary by the library
-// AFTER rotation - if the caller's Y/H aren't already multiples of 8,
-// the library EXPANDS the window outward to the nearest ones, redrawing
-// (and, worse, ERASING via fillScreen()) more than the caller asked for.
-// Chosen as the smallest 8-aligned window that still fully contains the
-// clock's actual ink (GAME_CLOCK_TOP..GAME_HALF_CLOCK_Y, currently
-// 65..86) - being multiples of 8 themselves means the library renders
-// EXACTLY this window, no surprise expansion into the footer note just
-// below (a real bug seen live before this: "footer bar sometimes
-// disappears" - the previous margin-based version left the actual
-// rendered bounds to the library's silent expansion, which reached a
-// couple pixels into the note's ink without ever redrawing it back).
-// Re-derive these two if GAME_CLOCK_TOP/GAME_HALF_CLOCK_Y ever change.
+// AFTER rotation: if the caller's Y/H aren't already multiples of 8, the
+// library EXPANDS the window outward to the nearest ones, redrawing (and,
+// worse, ERASING via fillScreen()) more than the caller asked for -
+// including neighboring content the caller never intended to touch and
+// won't redraw. Chosen here as the smallest 8-aligned window that still
+// fully contains the clock's actual ink (GAME_CLOCK_TOP..GAME_HALF_CLOCK_Y,
+// currently 65..86), so the library renders EXACTLY this window with no
+// expansion. Re-derive these two if GAME_CLOCK_TOP/GAME_HALF_CLOCK_Y ever
+// change.
 #define CLOCK_PARTIAL_WINDOW_Y 64
 #define CLOCK_PARTIAL_WINDOW_H 24
 
@@ -740,14 +735,10 @@ static void drawGameClockPartial(const ClockState &state) {
 // panel's physical byte-addressed axis). GAME_NAME_BOTTOM/FOOTER_LINE_Y
 // themselves aren't multiples of 8, so this does NOT use them directly -
 // GAME_MOVE_PARTIAL_WINDOW_Y/H below are the smallest 8-aligned window
-// that still fully contains everything this needs to draw, now including
-// FOOTER_LINE_Y (currently 40..112, vs the unaligned 45..104 those
-// constants would give - letting the library silently pick its own
-// expansion here is exactly what caused a real live bug before: the
-// separator line got erased by the expansion and never redrawn, since
-// drawing code only knew about the original, unaligned intent). This
-// window now also reaches into the top of the site URL text below the
-// line, so that has to be redrawn here too, not just the two lines.
+// that still fully contains everything this needs to draw, including
+// FOOTER_LINE_Y (currently 40..112). Because this window reaches down to
+// FOOTER_LINE_Y, it also reaches into the top of the site URL text just
+// below it, so that has to be redrawn here too, not just the two lines.
 #define GAME_MOVE_PARTIAL_WINDOW_Y 40
 #define GAME_MOVE_PARTIAL_WINDOW_H 72
 
