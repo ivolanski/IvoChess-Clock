@@ -120,8 +120,7 @@ void setup() {
   delay(500);
   Serial.println("\n=== IvoChess Clock ===");
 
-  initDisplay();
-  drawStartupScreen();
+  startDisplayTask();  // owns initDisplay()/drawStartupScreen() itself now - see DisplayFunctions.cpp
   initLEDs();
   initBatteryADC();
 
@@ -134,7 +133,7 @@ void setup() {
   updateLEDs(state);
 
   state.lastFullRefresh = millis();
-  updateDisplay(/*fullRefresh=*/true, state);
+  requestDisplayUpdate(/*fullRefresh=*/true, state);
   state.lastDisplayUpdate = millis();
 }
 
@@ -193,7 +192,7 @@ void loop() {
   if (needsFullRefresh) {
     // A new move (moveChanged) redraws immediately AND resets the 10s
     // countdown below - "aguarda novos 10 segundos ou um novo lance".
-    updateDisplay(/*fullRefresh=*/true, state);
+    requestDisplayUpdate(/*fullRefresh=*/true, state);
     state.lastFullRefresh = now;
     lastClockRefresh = now;
   } else if (state.hasGame && (now - lastClockRefresh >= GAME_CLOCK_REFRESH_INTERVAL_MS)) {
@@ -223,7 +222,7 @@ void loop() {
     // earlier testing on real hardware, so for now we just do a full
     // redraw periodically instead of every second - less "live", but
     // reliable.
-    updateDisplay(/*fullRefresh=*/true, state);
+    requestDisplayUpdate(/*fullRefresh=*/true, state);
     lastClockRefresh = now;
   }
   state.lastDisplayUpdate = now;

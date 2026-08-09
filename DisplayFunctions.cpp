@@ -10,15 +10,29 @@
 #include <Fonts/FreeMonoBold12pt7b.h>
 #include <Fonts/FreeMonoBold18pt7b.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+
 // The site doesn't exist yet (per the user: "e mais tipo uma propaganda
 // mesmo" - it's advertising for a future site), so this is static text
 // everywhere it's used, not a working link.
 #define SITE_URL "ivochess.ivolanski.com"
 
-GxEPD2_BW<GxEPD2_213_B74, GxEPD2_213_B74::HEIGHT> display(
+// static: the display object, and every function that touches it, are
+// now used EXCLUSIVELY from the dedicated display task started by
+// startDisplayTask() below - nothing else may call display.* directly.
+// A full e-paper refresh takes ~3.6s on real hardware (confirmed against
+// GxEPD2's own busy-wait timing constants); running it inline in the
+// main loop() blocked the live game connection (WebSocket/NDJSON stream)
+// and the admin webserver for that whole window, causing the on-screen
+// clock to visibly lag the real game by several seconds. See
+// requestDisplayUpdate()'s doc comment (DisplayFunctions.h) for the
+// non-blocking hand-off this task consumes from.
+static GxEPD2_BW<GxEPD2_213_B74, GxEPD2_213_B74::HEIGHT> display(
     GxEPD2_213_B74(EPD_CS, EPD_DC, EPD_RST, EPD_BUSY));
 
-void initDisplay() {
+static void initDisplay() {
   display.init(115200, true, 2, false);
   display.setRotation(DISPLAY_ROTATION);
   display.setTextWrap(false);  // avoids any text near the edge wrapping on its own
@@ -28,7 +42,7 @@ void initDisplay() {
 // Defined further down (needs printCentered(), declared below).
 static void drawLogoContent();
 
-void drawStartupScreen() {
+static void drawStartupScreen() {
   display.setFullWindow();
   display.fillScreen(GxEPD_WHITE);
   display.setTextColor(GxEPD_BLACK);
@@ -531,7 +545,7 @@ static void drawGameContent(const ClockState &state) {
   drawBottomBar(moveLabel, moveCountStr);
 }
 
-void updateDisplay(bool fullRefresh, const ClockState &state) {
+static void updateDisplay(bool fullRefresh, const ClockState &state) {
   display.setFullWindow();
   display.fillScreen(GxEPD_WHITE);
   display.setTextColor(GxEPD_BLACK);
@@ -554,4 +568,81 @@ void updateDisplay(bool fullRefresh, const ClockState &state) {
   }
 
   display.display(!fullRefresh);
+}
+
+// ---------------------------------------------------------------------------
+// Display task: owns 'display' exclusively. A length-1 FreeRTOS queue
+// with xQueueOverwrite() is the hand-off - "always keep just the latest
+// request, silently replace whatever's pending" - so if the game state
+// changes again before this task gets around to rendering the previous
+// request, that stale one is simply gone and the NEXT thing rendered is
+// always the most current state, never something already out of date by
+// the time it would appear on screen. No mutex anywhere: every writer of
+// ClockState (GameDataSource.cpp, LiveGameClient.cpp,
+// LichessLiveClient.cpp, BatteryFunctions.cpp, AdminPortal.cpp's
+// updateWiFiStatus(), IvoChess_Clock.ino itself) already runs inside the
+// SAME main loop() task - requestDisplayUpdate() below is called from
+// that same single-threaded context, so the snapshot copy it makes can
+// never race with any of those writers. This task only ever touches its
+// own local copy pulled off the queue, never the live ClockState.
+// ---------------------------------------------------------------------------
+struct DisplayUpdateRequest {
+  ClockState state;
+  bool fullRefresh;
+};
+
+static QueueHandle_t displayQueue = nullptr;
+
+static void displayTaskMain(void *) {
+  initDisplay();
+  drawStartupScreen();
+
+  DisplayUpdateRequest req;
+  for (;;) {
+    // Blocks here (no CPU spent) until requestDisplayUpdate() has
+    // something for us - the whole point of moving this to its own
+    // task: this wait, and the ~3.6s a real refresh below can take,
+    // never delay the main loop task's networking/admin work again.
+    if (xQueueReceive(displayQueue, &req, portMAX_DELAY) == pdTRUE) {
+      updateDisplay(req.fullRefresh, req.state);
+    }
+  }
+}
+
+void startDisplayTask() {
+  // Length 1: xQueueOverwrite() (used by requestDisplayUpdate()) requires
+  // exactly this, and it's exactly the "latest wins" semantics wanted
+  // here anyway - see the block comment above.
+  displayQueue = xQueueCreate(1, sizeof(DisplayUpdateRequest));
+
+  // Priority one below whatever the calling (main loop) task is
+  // currently running at - not a hardcoded number, so this stays correct
+  // regardless of what the Arduino core's default loop-task priority
+  // actually is. Guarantees the scheduler always favors network/admin
+  // work over display rendering when both are ready to run, layered on
+  // top of the fact that GxEPD2's own busy-wait already yields roughly
+  // every 1ms (verified in GxEPD2_EPD.cpp's _waitWhileBusy() - delay(1)
+  // + yield() per poll) - this priority gap is belt-and-suspenders, not
+  // load-bearing on its own.
+  UBaseType_t callerPriority = uxTaskPriorityGet(NULL);
+  UBaseType_t displayPriority = (callerPriority > 0) ? callerPriority - 1 : 0;
+
+  // 8192 bytes: comfortably above the stock FreeRTOS example tasks'
+  // 2048 (those do nothing but print), sized for GxEPD2's font rendering
+  // (FreeMonoBold9/12/18pt7b) plus this file's largest locals
+  // (char[128]-ish buffers in the drawing helpers). The main loop task
+  // separately needed 16KB (see IvoChess_Clock.ino's
+  // SET_LOOP_TASK_STACK_SIZE) for TLS/WiFi/HTTP work this task never
+  // does, so a smaller stack here is expected, not a shortcut - worth
+  // confirming with uxTaskGetStackHighWaterMark() during real hardware
+  // testing rather than treated as certainly correct.
+  xTaskCreate(displayTaskMain, "display", 8192, nullptr, displayPriority, nullptr);
+}
+
+void requestDisplayUpdate(bool fullRefresh, const ClockState &state) {
+  if (displayQueue == nullptr) return;  // startDisplayTask() not called yet - shouldn't happen, defensive only
+  DisplayUpdateRequest req;
+  req.state = state;  // plain struct copy, no pointers in ClockState - cheap and safe across the task boundary
+  req.fullRefresh = fullRefresh;
+  xQueueOverwrite(displayQueue, &req);
 }

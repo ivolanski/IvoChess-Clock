@@ -107,6 +107,13 @@
 // drift. A real RSocket clock value is always exact and must be shown
 // as-is - this offset is never applied to it, only to the extrapolated
 // fallback.
+//
+// Still valid after display rendering moved to its own FreeRTOS task
+// (DisplayFunctions.cpp's startDisplayTask()/requestDisplayUpdate()):
+// this measures "decision to visible" time, which is essentially
+// unchanged for the common case (the display task is idle, waiting on
+// its queue, the moment a request arrives) - the difference is that
+// loop() itself no longer blocks for that same window.
 #define DISPLAY_REFRESH_LATENCY_MS 2000
 
 // ---------------------------------------------------------------------------
