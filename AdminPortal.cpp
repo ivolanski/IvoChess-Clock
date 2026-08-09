@@ -188,12 +188,7 @@ static void handleRoot() {
 
   html += "<h2>Chess.com account</h2><div class='card'>";
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
-  html += "<small>This is the only cookie you need - the clock mints its own PHPSESSID from it "
-          "and refreshes it on its own from then on.</small>";
-  html += "<small>Capture it from an <b>incognito window</b>, then close that window without "
-          "browsing or playing in it. The token is single-use: whichever client refreshes it "
-          "first invalidates every other copy, so it cannot be shared with a browser you keep using.</small>";
-  html += "<small>Step-by-step: ivochess.ivolanski.com</small>";
+  html += "<small>Step-by-step to get your remember me at: ivochess.ivolanski.com</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
   html += "</div>";
 
