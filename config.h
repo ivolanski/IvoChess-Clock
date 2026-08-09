@@ -115,12 +115,34 @@
 #define DEFAULT_RESULT_DISPLAY_DURATION_SEC 15
 
 // While a game is live: how often to redraw the clocks (unless a new
-// move happens first, which also triggers an immediate redraw and
-// resets this countdown - see IvoChess_Clock.ino). Real partial-window
-// refresh caused visual corruption on real hardware (see
-// updateGameClocksPartial() in DisplayFunctions.cpp), so for now this
-// does a full-screen redraw instead of a true partial one.
-#define GAME_CLOCK_REFRESH_INTERVAL_MS (10UL * 1000UL)
+// move happens first, which also triggers an immediate redraw and resets
+// this countdown - see IvoChess_Clock.ino). Matches the outer 1s gate
+// updateGameData()'s caller already runs behind, so this is effectively
+// "every time that gate opens" - a true per-second ticking clock. Made
+// possible by drawGameClockPartial() (DisplayFunctions.cpp), a real
+// partial-window refresh - a first attempt at this corrupted the display
+// on real hardware (see git history, commit e470d66), root-caused and
+// fixed (see that function's own comment) and validated on real hardware
+// via tests/epaper_partial_refresh_poc/ before being ported into the
+// real game screen.
+#define GAME_CLOCK_REFRESH_INTERVAL_MS (1UL * 1000UL)
+
+// e-paper "ghosting" (faint traces of previous digits) builds up over
+// repeated partial refreshes of the same region - expected panel
+// behavior, not a bug. GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK bounds it: a
+// full refresh is forced after this many consecutive clock-only partial
+// ticks, regardless of FULL_REFRESH_INTERVAL_MS's 5-minute watchdog
+// above (which alone would let a slow-thinking player's move accumulate
+// hundreds of uncorrected partial ticks). Manufacturer guidance for this
+// panel is roughly every 5-10 partial updates, which is what an initial
+// conservative default (8) used - deliberately pushed way out here
+// instead, to real-hardware test how far partial-only ticking actually
+// holds up before ghosting becomes visible, per live testing. Lower this
+// back down once we've seen where it actually starts looking bad. In
+// normal play this rarely even matters - every actual move already
+// forces a full redraw via needsFullRefresh in IvoChess_Clock.ino, which
+// resets this streak too.
+#define GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK 60
 
 // A full e-paper refresh isn't instant - by the time it actually finishes
 // and the new frame is visible, this much real time has already passed
@@ -139,6 +161,15 @@
 // its queue, the moment a request arrives) - the difference is that
 // loop() itself no longer blocks for that same window.
 #define DISPLAY_REFRESH_LATENCY_MS 2000
+
+// Same idea as DISPLAY_REFRESH_LATENCY_MS above, but for the (now much
+// more common) case where the periodic clock tick goes through
+// requestGameClockPartialRefresh() instead of a full redraw - a true
+// partial-window refresh measured ~500ms "decision to visible" on real
+// hardware (tests/epaper_partial_refresh_poc/), vs ~2-3.6s for a full
+// one, so reusing the full-refresh latency here would over-correct the
+// extrapolated clock by roughly a second and a half for no reason.
+#define DISPLAY_REFRESH_LATENCY_PARTIAL_MS 500
 
 // ---------------------------------------------------------------------------
 // ADMIN - a SINGLE portal/server, reachable via hotspot OR the normal

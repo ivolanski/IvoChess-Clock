@@ -276,7 +276,14 @@ static void drawTopStatusBar(const ClockState &state) {
 // 11px/char) - it and the note CANNOT share one row at any usable size
 // without overlapping, so the note gets its own (visibly smaller) row.
 #define FOOTER_NOTE_GAP 4  // gap between the small note's bottom edge and the separator line below it
+#define FOOTER_Y_ADJUST 6  // shifts the whole footer row (note + site URL) down a little, per live testing (was 4, +2 more)
 #define BOTTOM_SEP_Y 100
+// The separator LINE moved independently of the note/URL zone above it
+// (BOTTOM_SEP_Y stays their reference point) - per live testing, sitting
+// it a bit further from the note read better visually. Kept as its own
+// constant rather than just bumping BOTTOM_SEP_Y so the note/URL don't
+// drift along with it.
+#define FOOTER_LINE_Y (BOTTOM_SEP_Y + 4)
 #define MESSAGE_ZONE_BOTTOM 84  // leaves room above the footer note for its height + FOOTER_NOTE_GAP
 
 // Small right-aligned note, using the GFX library's built-in font
@@ -298,26 +305,34 @@ static void printSmallRightAligned(const char *text, int bottomY) {
   display.print(text);
 }
 
-static void drawBottomBar(const char *noteLabel, const char *noteValue) {
-  char note[32];
-  snprintf(note, sizeof(note), "%s%s", noteLabel, noteValue);
-  printSmallRightAligned(note, BOTTOM_SEP_Y - FOOTER_NOTE_GAP);
-
-  display.drawFastHLine(0, BOTTOM_SEP_Y, SCREEN_WIDTH, GxEPD_BLACK);
-
-  // Vertically centered in the gap between the separator and the screen's
-  // bottom edge (rather than a guessed fixed baseline), same technique as
-  // printCenteredWrapped() - measure, then center around the real glyph
-  // box instead of the nominal font size.
+// Vertically centered in the gap between the separator and the screen's
+// bottom edge (rather than a guessed fixed baseline), same technique as
+// printCenteredWrapped() - measure, then center around the real glyph box
+// instead of the nominal font size. Factored out of drawBottomBar() so
+// drawGameMovePartial() below can redraw it too - its partial window now
+// reaches far enough down to overlap the top of this text (see that
+// function's comment), so it has to redraw this or risk erasing part of
+// it without ever putting it back.
+static void drawSiteUrl() {
   display.setFont(&FreeMonoBold9pt7b);
   int16_t x1, y1;
   uint16_t w, h;
   display.getTextBounds(SITE_URL, 0, 0, &x1, &y1, &w, &h);
   int zoneTop = BOTTOM_SEP_Y + 2;
   int zoneBottom = SCREEN_HEIGHT - STATUS_BAR_MARGIN;
-  int baseline = (zoneTop + zoneBottom) / 2 - y1 - (int)h / 2;
+  int baseline = (zoneTop + zoneBottom) / 2 - y1 - (int)h / 2 + FOOTER_Y_ADJUST;
   display.setCursor(STATUS_BAR_MARGIN, baseline);
   display.print(SITE_URL);
+}
+
+static void drawBottomBar(const char *noteLabel, const char *noteValue) {
+  char note[32];
+  snprintf(note, sizeof(note), "%s%s", noteLabel, noteValue);
+  printSmallRightAligned(note, BOTTOM_SEP_Y - FOOTER_NOTE_GAP + FOOTER_Y_ADJUST);
+
+  display.drawFastHLine(0, FOOTER_LINE_Y, SCREEN_WIDTH, GxEPD_BLACK);
+
+  drawSiteUrl();
 }
 
 // Short, human, ALWAYS-fits-on-one-line status headline for the middle
@@ -358,46 +373,57 @@ static void printCenteredIn(const char *text, int xLeft, int width, int y) {
 #define GAME_DIVIDER_X (SCREEN_WIDTH / 2)
 #define GAME_CONTENT_TOP (STATUS_BAR_BASELINE + 6)  // just below the top bar's separator line
 #define GAME_HALF_NAME_Y 34
-#define GAME_HALF_CLOCK_Y 84  // leaves a clear gap above the footer note row
+#define GAME_HALF_CLOCK_Y 86  // was 84, +2 per live testing - still leaves a clear gap above the footer note row
 // Rating sits in the gap between the name and the clock, not at a fixed
 // y - GAME_NAME_BOTTOM clears the name's descenders (9pt, ~5px past its
-// baseline) and GAME_CLOCK_TOP is the 18pt clock font's own ascent (~21px
-// above its baseline), so the zone tracks both neighbors exactly.
-#define GAME_NAME_BOTTOM (GAME_HALF_NAME_Y + 5)
+// baseline) plus a bit of extra breathing room (the rating/triangle read
+// as crowding right into the name without it, per live testing) and
+// GAME_CLOCK_TOP is the 18pt clock font's own ascent (~21px above its
+// baseline), so the zone tracks both neighbors exactly.
+#define GAME_NAME_DESCENDER_CLEARANCE 5
+#define GAME_NAME_EXTRA_GAP 6
+#define GAME_NAME_BOTTOM (GAME_HALF_NAME_Y + GAME_NAME_DESCENDER_CLEARANCE + GAME_NAME_EXTRA_GAP)
 #define GAME_CLOCK_TOP (GAME_HALF_CLOCK_Y - 21)
 #define GAME_HALF_MAX_CHARS 8  // conservative for a 125px half at 9pt bold mono - leaves margin so it can't crowd the divider
 
 // "On move" indicator - a small filled right-pointing triangle (the
 // original single-column layout's icon; a solid highlight bar was tried
-// for this split layout but read as just "meh" in practice). cx is
-// where the icon should be CENTERED horizontally (the clock's first
-// digit - see drawPlayerHalf), baselineY is the text row it should align
-// with (the rating line).
-static void drawPlayIcon(int cx, int baselineY) {
-  int cy = baselineY - 4;  // roughly centered on the rating text
+// for this split layout but read as just "meh" in practice). cx/cy is
+// where the icon should be CENTERED (cx = the clock's first digit - see
+// drawPlayerHalf; cy = the rating row's own vertical center).
+static void drawPlayIcon(int cx, int cy) {
   display.fillTriangle(cx - 5, cy - 5, cx - 5, cy + 5, cx + 4, cy, GxEPD_BLACK);
 }
 
-static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool isActive) {
-  display.setFont(&FreeMonoBold9pt7b);
-  char nameBuf[GAME_HALF_MAX_CHARS + 1];
-  strncpy(nameBuf, player.username, GAME_HALF_MAX_CHARS);
-  nameBuf[GAME_HALF_MAX_CHARS] = '\0';
-  printCenteredIn(nameBuf, xLeft, width, GAME_HALF_NAME_Y);
+// GxEPD2's built-in font (setFont(NULL)) - the smallest one available (no
+// custom "Free" font installed goes below 9pt - see printSmallRightAligned()'s
+// comment) - unlike the "Free" fonts used everywhere else in this file, it
+// anchors text at its TOP-LEFT corner, not its baseline, so centering it
+// vertically needs its own helper rather than reusing printCenteredIn().
+static void printCenteredInSmall(const char *text, int xLeft, int width, int centerY, uint8_t size) {
+  display.setFont(NULL);
+  display.setTextSize(size);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  int x = xLeft + ((int)width - (int)w) / 2;
+  if (x < xLeft) x = xLeft;
+  display.setCursor(x, centerY - y1 - (int)h / 2);
+  display.print(text);
+  display.setTextSize(1);  // restore the default every other caller of the built-in font (printSmallRightAligned) assumes
+}
 
-  char ratingBuf[16];
-  snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
-  int16_t rx1, ry1;
-  uint16_t rw, rh;
-  display.getTextBounds(ratingBuf, 0, 0, &rx1, &ry1, &rw, &rh);
-  int ratingBaseline = (GAME_NAME_BOTTOM + GAME_CLOCK_TOP) / 2 - ry1 - (int)rh / 2;
-  int ratingX = xLeft + ((int)width - (int)rw) / 2;
-  if (ratingX < xLeft) ratingX = xLeft;
-  display.setCursor(ratingX, ratingBaseline);
-  display.print(ratingBuf);
-
-  int minutes = player.clockMs / 60000;
-  int seconds = (player.clockMs / 1000) % 60;
+// Formats + draws just the clock digits for one player's half, centered
+// within [xLeft, xLeft+width) at the fixed GAME_HALF_CLOCK_Y baseline -
+// factored out of drawPlayerHalf() so the full game-screen redraw and the
+// partial-window clock-only tick (drawGameClockPartial() below) draw
+// pixel-identically instead of two copies of the same formatting/font/
+// centering logic drifting apart over time. Returns the x position used
+// (drawPlayerHalf() needs it to also place the "on move" triangle
+// relative to the clock's first digit).
+static int drawClockDigits(int xLeft, int width, long clockMs) {
+  int minutes = clockMs / 60000;
+  int seconds = (clockMs / 1000) % 60;
   char clockBuf[8];
   snprintf(clockBuf, sizeof(clockBuf), "%02d:%02d", minutes, seconds);
   display.setFont(&FreeMonoBold18pt7b);
@@ -408,12 +434,48 @@ static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool 
   if (clockX < xLeft) clockX = xLeft;
   display.setCursor(clockX, GAME_HALF_CLOCK_Y);
   display.print(clockBuf);
+  return clockX;
+}
+
+// Rating + "on move" triangle + clock digits - everything in a player's
+// half EXCEPT the name, which is the only piece that's truly static once
+// a game has started (rating/clock/turn all change as the game
+// progresses). Factored out of drawPlayerHalf() so the full game-screen
+// redraw and the partial-window move update (drawGameMovePartial() below)
+// draw pixel-identically instead of two copies drifting apart.
+// Pulls the rating/triangle row up from the exact midpoint between the
+// name and the clock - centered was crowding the clock above it, per
+// live testing (GAME_NAME_BOTTOM was already pushed down once to fix the
+// opposite problem, crowding the name - see its own comment).
+#define GAME_RATING_Y_BIAS 5  // nudged down 2px from 7 for a tighter/better-aligned look, per live testing
+// The built-in font at size 1 read as too small on real hardware - size 2
+// is the closest bigger step available (there's no custom font between
+// the built-in one and 9pt - see printCenteredInSmall()'s comment).
+#define GAME_RATING_TEXT_SIZE 2
+
+static void drawRatingAndClock(int xLeft, int width, const PlayerInfo &player, bool isActive) {
+  char ratingBuf[16];
+  snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
+  int ratingCenterY = (GAME_NAME_BOTTOM + GAME_CLOCK_TOP) / 2 - GAME_RATING_Y_BIAS;
+  printCenteredInSmall(ratingBuf, xLeft, width, ratingCenterY, GAME_RATING_TEXT_SIZE);
+
+  int clockX = drawClockDigits(xLeft, width, player.clockMs);
 
   if (isActive) {
     // Centered above the clock's first digit - one 18pt mono glyph is
     // ~21px wide, so +10 lands on that digit's own center.
-    drawPlayIcon(clockX + 10, ratingBaseline);
+    drawPlayIcon(clockX + 10, ratingCenterY);
   }
+}
+
+static void drawPlayerHalf(int xLeft, int width, const PlayerInfo &player, bool isActive) {
+  display.setFont(&FreeMonoBold9pt7b);
+  char nameBuf[GAME_HALF_MAX_CHARS + 1];
+  strncpy(nameBuf, player.username, GAME_HALF_MAX_CHARS);
+  nameBuf[GAME_HALF_MAX_CHARS] = '\0';
+  printCenteredIn(nameBuf, xLeft, width, GAME_HALF_NAME_Y);
+
+  drawRatingAndClock(xLeft, width, player, isActive);
 }
 
 // The logo/status alternation ONLY applies while genuinely idle - not
@@ -540,7 +602,7 @@ static int myPlayerIndex(const ClockState &state) {
 // (site URL left, move count right) as the waiting screen's IP line.
 static void drawGameContent(const ClockState &state) {
   drawTopStatusBar(state);
-  display.drawFastVLine(GAME_DIVIDER_X, GAME_CONTENT_TOP, BOTTOM_SEP_Y - GAME_CONTENT_TOP, GxEPD_BLACK);
+  display.drawFastVLine(GAME_DIVIDER_X, GAME_CONTENT_TOP, FOOTER_LINE_Y - GAME_CONTENT_TOP, GxEPD_BLACK);
 
   int meIndex = myPlayerIndex(state);
   int rightIndex = (meIndex == -1) ? 1 : meIndex;  // unknown - keep the pre-existing raw order
@@ -554,6 +616,175 @@ static void drawGameContent(const ClockState &state) {
   char moveCountStr[8];
   snprintf(moveCountStr, sizeof(moveCountStr), "%d", state.moveCount);
   drawBottomBar(moveLabel, moveCountStr);
+}
+
+// ---------------------------------------------------------------------------
+// True partial-window clock tick (drawGameClockPartial). Validated on real
+// hardware first via a standalone POC (tests/epaper_partial_refresh_poc/)
+// before being ported here - see that sketch's header comment for the full
+// writeup. Two things that POC (and re-reading the deleted first attempt
+// at this, git commit e470d66) established that matter here:
+//
+//   1. setPartialWindow() must get PLAIN logical coordinates, never
+//      manually byte-rounded by the caller - it rotates them into the
+//      panel's physical coordinates internally and does its own alignment
+//      AFTER that (GxEPD2_BW.h). The deleted attempt hand-aligned the X
+//      axis, which is only the axis that matters for rotation 0/2 - this
+//      project uses DISPLAY_ROTATION 1, where Y/H is the one that needs
+//      alignment, so the old code aligned the wrong axis on top of (not
+//      instead of) the library's own correct handling. Likely the actual
+//      cause of the corruption seen back then.
+//   2. The window must be a FIXED rectangle, identical on every tick, not
+//      recomputed from that tick's specific digits. A monospace font's
+//      per-string INK bounding box can still vary by a couple pixels
+//      between different digit combinations (e.g. "11:11" vs "88:88")
+//      even though the ADVANCE width is fixed - re-measuring per tick and
+//      shrinking the window for a narrower value would leave the previous,
+//      wider frame's pixels un-erased at the edges. clockBoxes[] below is
+//      measured ONCE from a reference string and reused forever.
+// ---------------------------------------------------------------------------
+
+// [0] = left half's clock box, [1] = right half's - x/w only; the y-range
+// reuses GAME_CLOCK_TOP/GAME_HALF_CLOCK_Y directly (the same fixed zone
+// boundary drawPlayerHalf() already reserves for the clock text, which by
+// construction can't collide with the rating/"on move" triangle above it).
+struct ClockBox { int16_t x; uint16_t w; };
+static ClockBox clockBoxes[2];
+static bool clockBoxesMeasured = false;
+
+#define CLOCK_PARTIAL_X_MARGIN 6       // absorbs the per-frame ink-width wobble noted above
+
+// setPartialWindow()'s Y/H (this project uses DISPLAY_ROTATION 1, so Y/H
+// is the axis that lands on the panel's physical byte-addressed axis -
+// see the block comment on drawGameMovePartial() below for the full
+// derivation) get silently ROUNDED to an 8px boundary by the library
+// AFTER rotation - if the caller's Y/H aren't already multiples of 8,
+// the library EXPANDS the window outward to the nearest ones, redrawing
+// (and, worse, ERASING via fillScreen()) more than the caller asked for.
+// Chosen as the smallest 8-aligned window that still fully contains the
+// clock's actual ink (GAME_CLOCK_TOP..GAME_HALF_CLOCK_Y, currently
+// 65..86) - being multiples of 8 themselves means the library renders
+// EXACTLY this window, no surprise expansion into the footer note just
+// below (a real bug seen live before this: "footer bar sometimes
+// disappears" - the previous margin-based version left the actual
+// rendered bounds to the library's silent expansion, which reached a
+// couple pixels into the note's ink without ever redrawing it back).
+// Re-derive these two if GAME_CLOCK_TOP/GAME_HALF_CLOCK_Y ever change.
+#define CLOCK_PARTIAL_WINDOW_Y 64
+#define CLOCK_PARTIAL_WINDOW_H 24
+
+static void measureClockBoxes() {
+  display.setFont(&FreeMonoBold18pt7b);
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds("88:88", 0, 0, &x1, &y1, &w, &h);
+  const int xLeftOf[2] = {0, GAME_DIVIDER_X};
+  const int widthOf[2] = {GAME_DIVIDER_X, SCREEN_WIDTH - GAME_DIVIDER_X};
+  for (int i = 0; i < 2; i++) {
+    int x = xLeftOf[i] + ((int)widthOf[i] - (int)w) / 2;
+    if (x < xLeftOf[i]) x = xLeftOf[i];
+    clockBoxes[i].x = (int16_t)x;
+    clockBoxes[i].w = w;
+  }
+  clockBoxesMeasured = true;
+}
+
+// Redraws ONLY the currently active player's clock digits, via a real
+// partial-window refresh - see the block comment above. No-op if there's
+// no game or activePlayerIndex isn't a valid side (nothing to tick).
+static void drawGameClockPartial(const ClockState &state) {
+  if (!state.hasGame) return;
+  int idx = state.activePlayerIndex;
+  if (idx != 0 && idx != 1) return;
+
+  if (!clockBoxesMeasured) measureClockBoxes();
+
+  // Same left/right assignment as drawGameContent() - "me" always on the
+  // right, matching the full redraw, so the partial tick never draws the
+  // active clock on the wrong side of the divider.
+  int meIndex = myPlayerIndex(state);
+  int rightIndex = (meIndex == -1) ? 1 : meIndex;
+  int leftIndex = 1 - rightIndex;
+  int side = (idx == leftIndex) ? 0 : 1;
+  int xLeft = (side == 0) ? 0 : GAME_DIVIDER_X;
+  int width = (side == 0) ? GAME_DIVIDER_X : (SCREEN_WIDTH - GAME_DIVIDER_X);
+
+  const ClockBox &box = clockBoxes[side];
+  int windowX = (int)box.x - CLOCK_PARTIAL_X_MARGIN;
+  int windowW = (int)box.w + 2 * CLOCK_PARTIAL_X_MARGIN;
+
+  display.setPartialWindow(windowX, CLOCK_PARTIAL_WINDOW_Y, windowW, CLOCK_PARTIAL_WINDOW_H);
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    drawClockDigits(xLeft, width, state.players[idx].clockMs);
+  } while (display.nextPage());
+}
+
+// True partial-window refresh of everything a MOVE can change: both
+// halves' rating/"on move" triangle/clock zone, the move count, and the
+// small stretch of the vertical divider line that passes through that
+// zone - but NOT the name row above it (truly static once a game starts)
+// or the top status bar (WiFi/battery, unrelated to moves). One combined
+// window spanning the full width, rather than one window per element -
+// simpler, and avoids firing off several back-to-back partial-mode LUT
+// updates for a single move (a GxEPD2/SSD1680 combination elsewhere was
+// found, during research for this feature, to behave oddly when a
+// partial update's power-on sequence runs back-to-back like that - this
+// sidesteps the question entirely by only ever doing one partial update
+// per move).
+//
+// Window Y/H MUST be multiples of 8 - same reason as
+// CLOCK_PARTIAL_WINDOW_Y/H above (this project's rotation puts Y/H on the
+// panel's physical byte-addressed axis). GAME_NAME_BOTTOM/FOOTER_LINE_Y
+// themselves aren't multiples of 8, so this does NOT use them directly -
+// GAME_MOVE_PARTIAL_WINDOW_Y/H below are the smallest 8-aligned window
+// that still fully contains everything this needs to draw, now including
+// FOOTER_LINE_Y (currently 40..112, vs the unaligned 45..104 those
+// constants would give - letting the library silently pick its own
+// expansion here is exactly what caused a real live bug before: the
+// separator line got erased by the expansion and never redrawn, since
+// drawing code only knew about the original, unaligned intent). This
+// window now also reaches into the top of the site URL text below the
+// line, so that has to be redrawn here too, not just the two lines.
+#define GAME_MOVE_PARTIAL_WINDOW_Y 40
+#define GAME_MOVE_PARTIAL_WINDOW_H 72
+
+static void drawGameMovePartial(const ClockState &state) {
+  if (!state.hasGame) return;
+
+  display.setPartialWindow(0, GAME_MOVE_PARTIAL_WINDOW_Y, SCREEN_WIDTH, GAME_MOVE_PARTIAL_WINDOW_H);
+  display.firstPage();
+  do {
+    display.fillScreen(GxEPD_WHITE);
+    display.setTextColor(GxEPD_BLACK);
+    // The static divider line, the horizontal separator, and (per the
+    // 8-alignment note above) the top of the site URL all fall within
+    // this window - fillScreen() just erased whatever was there, so all
+    // three need redrawing, same as the full redraw draws them
+    // (drawGameContent()/drawBottomBar()). The vertical line's real
+    // extent stops AT FOOTER_LINE_Y (matching drawGameContent()) even
+    // though the window itself reaches further - redrawing past that
+    // would extend it where it was never meant to be.
+    display.drawFastVLine(GAME_DIVIDER_X, GAME_MOVE_PARTIAL_WINDOW_Y, FOOTER_LINE_Y - GAME_MOVE_PARTIAL_WINDOW_Y, GxEPD_BLACK);
+    display.drawFastHLine(0, FOOTER_LINE_Y, SCREEN_WIDTH, GxEPD_BLACK);
+    drawSiteUrl();
+
+    int meIndex = myPlayerIndex(state);
+    int rightIndex = (meIndex == -1) ? 1 : meIndex;
+    int leftIndex = 1 - rightIndex;
+    drawRatingAndClock(0, GAME_DIVIDER_X, state.players[leftIndex], state.activePlayerIndex == leftIndex);
+    drawRatingAndClock(GAME_DIVIDER_X, SCREEN_WIDTH - GAME_DIVIDER_X, state.players[rightIndex], state.activePlayerIndex == rightIndex);
+
+    char moveLabel[16];
+    snprintf(moveLabel, sizeof(moveLabel), "%s: ", T(STR_MOVE));
+    char moveCountStr[8];
+    snprintf(moveCountStr, sizeof(moveCountStr), "%d", state.moveCount);
+    char note[32];
+    snprintf(note, sizeof(note), "%s%s", moveLabel, moveCountStr);
+    printSmallRightAligned(note, BOTTOM_SEP_Y - FOOTER_NOTE_GAP + FOOTER_Y_ADJUST);
+  } while (display.nextPage());
 }
 
 static void updateDisplay(bool fullRefresh, const ClockState &state) {
@@ -600,9 +831,49 @@ static void updateDisplay(bool fullRefresh, const ClockState &state) {
 struct DisplayUpdateRequest {
   ClockState state;
   bool fullRefresh;
+  bool clockPartialOnly;  // when true, ignore fullRefresh/movePartialOnly and do a true partial-window redraw of just the active player's clock digits (drawGameClockPartial())
+  bool movePartialOnly;   // when true, ignore fullRefresh and do a true partial-window redraw of everything a move can change (drawGameMovePartial()) - mutually exclusive with clockPartialOnly
 };
 
 static QueueHandle_t displayQueue = nullptr;
+
+// True only right after a FULL (non-partial) render that actually drew the
+// game screen - i.e. it's currently safe to layer a clock/move partial on
+// top, because the rest of the screen is known to already show correct
+// game content. A subtle race made this necessary: the queue is "latest
+// wins" (xQueueOverwrite), which was perfectly safe when every request
+// fully repainted the screen - skipping a superseded one never left
+// anything stale. Now that clock/move requests only touch a small window,
+// that's no longer true: a full refresh takes up to ~3.6s, so if it's
+// still mid-render when the NEXT 1s tick queues a clock-partial request,
+// that overwrite can bump a FULL refresh that was never actually shown
+// yet - e.g. a phase change (burn-in logo -> game) - in favor of a
+// partial one, which would then paint a small window on top of the STILL
+// STALE old screen (reported live as leftover burn-in-screen garbage
+// after a game started). Rather than trying to prevent that race on the
+// producer side (which would mean blocking/rate-limiting the very
+// non-blocking design this queue exists for), the consumer here just
+// self-corrects: any partial request arriving while this is false gets
+// upgraded to a real full refresh instead of trusting the assumption that
+// doesn't currently hold.
+static bool gameScreenBaseValid = false;
+
+// The moveCount actually reflected on screen as of the last full or
+// move-partial render (both of those redraw the "on move" triangle;
+// drawGameClockPartial() never does). The SAME race gameScreenBaseValid
+// guards against also applies one level down: a move-partial request
+// (which would move the triangle) can itself get superseded in the
+// "latest wins" queue by a LATER clock-tick request before the display
+// task ever renders it, if a move happens while the task is still busy
+// with something else. The clock-tick request still carries the
+// up-to-date activePlayerIndex (state is always a fresh snapshot), so the
+// digits DO show the new active player if rendered as a plain tick - just
+// the triangle never moved, because a tick-only partial doesn't touch it.
+// Comparing the tick request's moveCount against this catches exactly
+// that case and upgrades it to a move-partial instead. Starts at -1 (no
+// real game ever has a negative move count) so it can't accidentally
+// match before anything has actually been rendered.
+static int lastRenderedMoveCount = -1;
 
 static void displayTaskMain(void *) {
   initDisplay();
@@ -615,7 +886,32 @@ static void displayTaskMain(void *) {
     // task: this wait, and the ~3.6s a real refresh below can take,
     // never delay the main loop task's networking/admin work again.
     if (xQueueReceive(displayQueue, &req, portMAX_DELAY) == pdTRUE) {
-      updateDisplay(req.fullRefresh, req.state);
+      if (!gameScreenBaseValid) {
+        // Never trust ANY partial request until a full render has
+        // actually confirmed the base on-screen content - see
+        // gameScreenBaseValid's own comment.
+        updateDisplay(true, req.state);
+        gameScreenBaseValid = req.state.hasGame;
+        lastRenderedMoveCount = req.state.moveCount;
+      } else if (req.clockPartialOnly && req.state.moveCount == lastRenderedMoveCount) {
+        // Safe: nothing that would move the "on move" triangle happened
+        // since it was last confirmed correct on screen.
+        drawGameClockPartial(req.state);
+      } else if (req.clockPartialOnly || req.movePartialOnly) {
+        // Either a genuine move update, or a clock-tick that arrived
+        // with a moveCount that's moved on since our last confirmed
+        // render - see lastRenderedMoveCount's comment above for why
+        // that means a move-partial got superseded before ever
+        // rendering. drawGameMovePartial() redraws everything a move can
+        // change from the CURRENT state snapshot, so it's the correct
+        // fix in both cases.
+        drawGameMovePartial(req.state);
+        lastRenderedMoveCount = req.state.moveCount;
+      } else {
+        updateDisplay(req.fullRefresh, req.state);
+        gameScreenBaseValid = req.state.hasGame;
+        lastRenderedMoveCount = req.state.moveCount;
+      }
     }
   }
 }
@@ -655,5 +951,27 @@ void requestDisplayUpdate(bool fullRefresh, const ClockState &state) {
   DisplayUpdateRequest req;
   req.state = state;  // plain struct copy, no pointers in ClockState - cheap and safe across the task boundary
   req.fullRefresh = fullRefresh;
+  req.clockPartialOnly = false;
+  req.movePartialOnly = false;
+  xQueueOverwrite(displayQueue, &req);
+}
+
+void requestGameClockPartialRefresh(const ClockState &state) {
+  if (displayQueue == nullptr) return;
+  DisplayUpdateRequest req;
+  req.state = state;
+  req.fullRefresh = false;  // unused when clockPartialOnly is set
+  req.clockPartialOnly = true;
+  req.movePartialOnly = false;
+  xQueueOverwrite(displayQueue, &req);
+}
+
+void requestGameMovePartialRefresh(const ClockState &state) {
+  if (displayQueue == nullptr) return;
+  DisplayUpdateRequest req;
+  req.state = state;
+  req.fullRefresh = false;  // unused when movePartialOnly is set
+  req.clockPartialOnly = false;
+  req.movePartialOnly = true;
   xQueueOverwrite(displayQueue, &req);
 }

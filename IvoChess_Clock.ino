@@ -187,45 +187,97 @@ void loop() {
   bool phaseChanged = (logoPhaseNow != lastLogoPhase);
   lastLogoPhase = logoPhaseNow;
 
-  bool needsFullRefresh = phaseChanged || gameDataChanged || resultWindowChanged || moveChanged ||
+  // moveChanged is deliberately NOT part of this - a move is handled in
+  // its own branch below (drawGameMovePartial()), since nothing else on
+  // the game screen actually needs a truly full redraw when a move is
+  // the only thing that happened (names are the only static piece once a
+  // game starts; everything else - rating display aside, ratings do
+  // change - already gets redrawn by the partial path).
+  bool needsFullRefresh = phaseChanged || gameDataChanged || resultWindowChanged ||
                           (now - state.lastFullRefresh) > FULL_REFRESH_INTERVAL_MS;
 
   static unsigned long lastClockRefresh = 0;
+  // Consecutive partial-only redraws (clock ticks OR move updates) since
+  // the last TRUE full redraw - shared by both, since both use the same
+  // fast partial waveform and contribute to the same e-paper ghosting.
+  // See GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK (config.h).
+  static int partialRefreshStreak = 0;
 
   if (needsFullRefresh) {
-    // A new move (moveChanged) redraws immediately AND resets the 10s
-    // countdown below - "aguarda novos 10 segundos ou um novo lance".
+    // Any full redraw here also clears accumulated e-paper ghosting from
+    // the partial-only redraws below, so reset that streak too.
     requestDisplayUpdate(/*fullRefresh=*/true, state);
     state.lastFullRefresh = now;
     lastClockRefresh = now;
+    partialRefreshStreak = 0;
+  } else if (moveChanged && state.hasGame) {
+    // A move happened, but nothing else that would need a truly full
+    // redraw - try the targeted move partial refresh (drawGameMovePartial(),
+    // DisplayFunctions.cpp), bounded by the same ghosting streak as the
+    // per-second clock-only tick below.
+    if (partialRefreshStreak >= GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK) {
+      requestDisplayUpdate(/*fullRefresh=*/true, state);
+      state.lastFullRefresh = now;
+      partialRefreshStreak = 0;
+    } else {
+      requestGameMovePartialRefresh(state);
+      partialRefreshStreak++;
+    }
+    // A move already carries a real RSocket/board-API clock value, not an
+    // extrapolation - nothing for the periodic-tick branch below to add
+    // this same second.
+    lastClockRefresh = now;
   } else if (state.hasGame && (now - lastClockRefresh >= GAME_CLOCK_REFRESH_INTERVAL_MS)) {
-    // No real RSocket clock update landed during this window (that would
-    // have gone through the moveChanged/needsFullRefresh branch above,
-    // which resets lastClockRefresh) - extrapolate locally so the display
-    // doesn't just sit frozen between RSocket updates. Computed fresh
-    // from clockBaselineMs/clockBaselineAtMs (the last REAL values +
-    // when they were captured - see ClockState.h) each time, rather than
-    // chaining off the previously-displayed value, so it can't drift from
-    // loop() timing jitter (e.g. a slow e-paper full refresh delaying
-    // this branch past the nominal 10s) - always exact-elapsed-time
-    // accurate relative to the real anchor point.
+    // No real move/clock update landed during this window (that would
+    // have gone through the moveChanged branch above, which resets
+    // lastClockRefresh) - extrapolate locally so the display doesn't just
+    // sit frozen between updates. Computed fresh from clockBaselineMs/
+    // clockBaselineAtMs (the last REAL values + when they were captured -
+    // see ClockState.h) each time, rather than chaining off the
+    // previously-displayed value, so it can't drift from loop() timing
+    // jitter - always exact-elapsed-time accurate relative to the real
+    // anchor point.
+    bool didPartial = false;
     if (state.activePlayerIndex == 0 || state.activePlayerIndex == 1) {
       int idx = state.activePlayerIndex;
-      // + DISPLAY_REFRESH_LATENCY_MS: the value computed here won't
-      // actually be visible until the full refresh below finishes, so
-      // extrapolate to THAT moment, not to "now" - otherwise the clock
-      // reads a fixed ~2s behind real time the instant it's drawn (this
-      // is the only place that offset applies - a real RSocket clock
-      // value elsewhere is exact and is never adjusted like this).
-      long elapsed = (long)(now - state.clockBaselineAtMs) + DISPLAY_REFRESH_LATENCY_MS;
+      bool useFullRefresh = partialRefreshStreak >= GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK;
+
+      // + latency offset: the value computed here won't actually be
+      // visible until the redraw below finishes, so extrapolate to THAT
+      // moment, not to "now" - otherwise the clock reads a fixed amount
+      // behind real time the instant it's drawn (this is the only place
+      // either offset applies - a real clock value elsewhere is exact and
+      // is never adjusted like this). Which offset depends on which kind
+      // of redraw is about to happen below.
+      long latency = useFullRefresh ? DISPLAY_REFRESH_LATENCY_MS : DISPLAY_REFRESH_LATENCY_PARTIAL_MS;
+      long elapsed = (long)(now - state.clockBaselineAtMs) + latency;
       long extrapolated = state.clockBaselineMs[idx] - elapsed;
       state.players[idx].clockMs = (extrapolated > 0) ? extrapolated : 0;
+
+      if (useFullRefresh) {
+        // Ghosting safety net (GAME_CLOCK_PARTIAL_REFRESH_MAX_STREAK) -
+        // see config.h. Also keeps FULL_REFRESH_INTERVAL_MS's watchdog
+        // timer in sync so it doesn't fire again immediately after.
+        requestDisplayUpdate(/*fullRefresh=*/true, state);
+        state.lastFullRefresh = now;
+        partialRefreshStreak = 0;
+      } else {
+        // True partial-window refresh of just this player's clock digits
+        // - see drawGameClockPartial() (DisplayFunctions.cpp) for how,
+        // and why an earlier attempt at this corrupted the display.
+        requestGameClockPartialRefresh(state);
+        partialRefreshStreak++;
+      }
+      didPartial = true;
     }
-    // A real partial-window e-paper refresh caused visual corruption in
-    // earlier testing on real hardware, so for now we just do a full
-    // redraw periodically instead of every second - less "live", but
-    // reliable.
-    requestDisplayUpdate(/*fullRefresh=*/true, state);
+    if (!didPartial) {
+      // activePlayerIndex isn't a valid side (shouldn't normally happen
+      // mid-game) - nothing sensible to tick, but still redraw so the
+      // screen doesn't silently go stale.
+      requestDisplayUpdate(/*fullRefresh=*/true, state);
+      state.lastFullRefresh = now;
+      partialRefreshStreak = 0;
+    }
     lastClockRefresh = now;
   }
   state.lastDisplayUpdate = now;
