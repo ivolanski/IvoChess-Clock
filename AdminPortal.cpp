@@ -246,7 +246,7 @@ static void handleRoot() {
     // as the Lichess "Disconnect" button below. Separate from leaving the
     // cookie field empty on Save, which deliberately KEEPS the current
     // cookie - this is the explicit "throw it away" action instead.
-    html += "<button type='submit' formaction='/chesscom/invalidate' formmethod='POST' style='margin-top:14px;background:var(--bad)'>Forget cookie</button>";
+    html += "<button type='submit' formaction='/chesscom/invalidate' formmethod='POST' style='margin-top:14px'>Forget cookie</button>";
   }
   html += "</div>";
 
