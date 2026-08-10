@@ -3,6 +3,7 @@
 #include "Translations.h"
 #include "AdminPortal.h"
 #include "GameDataSource.h"
+#include "ChessConnectBLE.h"
 
 #include <ctype.h>
 
@@ -241,10 +242,15 @@ static void drawTopStatusBar(const ClockState &state) {
   // bars for a network we're not even on) - connected shows a short
   // SSID plus signal bars right after it.
   display.setCursor(STATUS_BAR_MARGIN, STATUS_BAR_BASELINE);
+  int cursorX;
   if (!state.wifiConnected) {
     char buf[24];
     snprintf(buf, sizeof(buf), "%s %s", T(STR_WIFI), T(STR_DISCONNECTED));
     display.print(buf);
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
+    cursorX = STATUS_BAR_MARGIN + (int)w;
   } else {
     char ssidShort[11];
     strncpy(ssidShort, state.wifiSSID, 10);
@@ -255,7 +261,31 @@ static void drawTopStatusBar(const ClockState &state) {
     uint16_t w, h;
     display.getTextBounds(ssidShort, 0, 0, &x1, &y1, &w, &h);
     int barsX = STATUS_BAR_MARGIN + w + 6;
-    drawSignalBars(barsX, STATUS_BAR_BASELINE, wifiBarCount(state.wifiStrength), 4);
+    int barsW = drawSignalBars(barsX, STATUS_BAR_BASELINE, wifiBarCount(state.wifiStrength), 4);
+    cursorX = barsX + barsW;
+  }
+
+  // ChessConnect only: a "BT" indicator right after the WiFi block -
+  // WiFi here is just for the admin portal/NTP, the actual game data
+  // comes over Bluetooth, so it's worth its own at-a-glance status.
+  // "BT(P)" = advertising, waiting to pair; "BT" + bars once a central
+  // is actually connected. Real per-connection RSSI isn't straightforward
+  // to read from this BLE stack, so the bars show full/empty as a
+  // connected/not indicator rather than a true variable signal strength
+  // (unlike the WiFi bars, which are real RSSI) - worth knowing if this
+  // ever looks static compared to the WiFi ones.
+  if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) {
+    cursorX += 8;
+    display.setCursor(cursorX, STATUS_BAR_BASELINE);
+    bool connected = chessConnectBleIsConnected();
+    const char *btLabel = connected ? "BT" : "BT(P)";
+    display.print(btLabel);
+    if (connected) {
+      int16_t x1, y1;
+      uint16_t w, h;
+      display.getTextBounds(btLabel, 0, 0, &x1, &y1, &w, &h);
+      drawSignalBars(cursorX + (int)w + 4, STATUS_BAR_BASELINE, 4, 4);
+    }
   }
 
   // Right: battery, as bars only (no percentage number - config asked
@@ -452,10 +482,15 @@ static int drawClockDigits(int xLeft, int width, long clockMs) {
 #define GAME_RATING_TEXT_SIZE 2
 
 static void drawRatingAndClock(int xLeft, int width, const PlayerInfo &player, bool isActive) {
-  char ratingBuf[16];
-  snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
   int ratingCenterY = (GAME_NAME_BOTTOM + GAME_CLOCK_TOP) / 2 - GAME_RATING_Y_BIAS;
-  printCenteredInSmall(ratingBuf, xLeft, width, ratingCenterY, GAME_RATING_TEXT_SIZE);
+  // ChessConnect never sends a rating (see RATING_UNKNOWN) - hide the row
+  // entirely rather than show a placeholder "(?)", per direct feedback
+  // from real-hardware testing.
+  if (player.rating != RATING_UNKNOWN) {
+    char ratingBuf[16];
+    snprintf(ratingBuf, sizeof(ratingBuf), "(%d)", player.rating);
+    printCenteredInSmall(ratingBuf, xLeft, width, ratingCenterY, GAME_RATING_TEXT_SIZE);
+  }
 
   int clockX = drawClockDigits(xLeft, width, player.clockMs);
 
@@ -598,6 +633,32 @@ static int myPlayerIndex(const ClockState &state) {
 // waiting screen (consistent look), a vertical divider splitting
 // opponent (left) from "me" (right), and the same bottom-bar style
 // (site URL left, move count right) as the waiting screen's IP line.
+// Shared between the full redraw (drawGameContent) and the partial-window
+// move update (drawGameMovePartial) so both render pixel-identically -
+// see that function's own comment for why keeping them in sync matters.
+// ChessConnect's opponent move text (state.chessConnectMoveText) briefly
+// takes over this slot instead of the move count when present - the
+// first real UI use of that data (chess.com/Lichess never send move
+// text at all). Outside that window, MOVE_COUNT_UNKNOWN (ChessConnect
+// never sends a real count either) hides the slot entirely rather than
+// showing a placeholder "?", per direct feedback from real-hardware
+// testing.
+static void bottomBarMoveContent(const ClockState &state, char *labelOut, size_t labelOutLen,
+                                  char *valueOut, size_t valueOutLen) {
+  if (state.chessConnectMoveTextUntilMs != 0 && millis() < state.chessConnectMoveTextUntilMs) {
+    snprintf(labelOut, labelOutLen, "%s: ", T(STR_OPP_MOVE));
+    snprintf(valueOut, valueOutLen, "%s", state.chessConnectMoveText);
+    return;
+  }
+  if (state.moveCount == MOVE_COUNT_UNKNOWN) {
+    labelOut[0] = '\0';
+    valueOut[0] = '\0';
+    return;
+  }
+  snprintf(labelOut, labelOutLen, "%s: ", T(STR_MOVE));
+  snprintf(valueOut, valueOutLen, "%d", state.moveCount);
+}
+
 static void drawGameContent(const ClockState &state) {
   drawTopStatusBar(state);
   display.drawFastVLine(GAME_DIVIDER_X, GAME_CONTENT_TOP, FOOTER_LINE_Y - GAME_CONTENT_TOP, GxEPD_BLACK);
@@ -610,9 +671,8 @@ static void drawGameContent(const ClockState &state) {
   drawPlayerHalf(GAME_DIVIDER_X, SCREEN_WIDTH - GAME_DIVIDER_X, state.players[rightIndex], state.activePlayerIndex == rightIndex);
 
   char moveLabel[16];
-  snprintf(moveLabel, sizeof(moveLabel), "%s: ", T(STR_MOVE));
-  char moveCountStr[8];
-  snprintf(moveCountStr, sizeof(moveCountStr), "%d", state.moveCount);
+  char moveCountStr[24];
+  bottomBarMoveContent(state, moveLabel, sizeof(moveLabel), moveCountStr, sizeof(moveCountStr));
   drawBottomBar(moveLabel, moveCountStr);
 }
 
@@ -769,10 +829,9 @@ static void drawGameMovePartial(const ClockState &state) {
     drawRatingAndClock(GAME_DIVIDER_X, SCREEN_WIDTH - GAME_DIVIDER_X, state.players[rightIndex], state.activePlayerIndex == rightIndex);
 
     char moveLabel[16];
-    snprintf(moveLabel, sizeof(moveLabel), "%s: ", T(STR_MOVE));
-    char moveCountStr[8];
-    snprintf(moveCountStr, sizeof(moveCountStr), "%d", state.moveCount);
-    char note[32];
+    char moveCountStr[24];
+    bottomBarMoveContent(state, moveLabel, sizeof(moveLabel), moveCountStr, sizeof(moveCountStr));
+    char note[40];
     snprintf(note, sizeof(note), "%s%s", moveLabel, moveCountStr);
     printSmallRightAligned(note, BOTTOM_SEP_Y - FOOTER_NOTE_GAP + FOOTER_Y_ADJUST);
   } while (display.nextPage());

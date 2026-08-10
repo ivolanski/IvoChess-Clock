@@ -5,6 +5,13 @@
 
 #define USERNAME_MAX_LEN 32
 
+// Sentinel for a rating/move-count that's genuinely unknown (ChessConnect
+// mode - see ChessConnectBLE.cpp - never receives either from Chessconnect,
+// unlike chess.com/Lichess). DisplayFunctions.cpp checks for this instead
+// of blindly formatting %d, so the screen shows "?" rather than "(-1)".
+#define RATING_UNKNOWN (-1)
+#define MOVE_COUNT_UNKNOWN (-1)
+
 struct PlayerInfo {
   char username[USERNAME_MAX_LEN];
   int rating;
@@ -94,6 +101,14 @@ struct ClockState {
   // as genuinely idle, and showing the logo screen during it looked like
   // it had frozen the game). 0 = no game seen yet this boot.
   unsigned long lastGameActiveAt;
+
+  // ChessConnect only (see ChessConnectBLE.cpp): the opponent's last move
+  // text (e.g. "PE7E5"), shown briefly in the bottom bar in place of the
+  // move count - chess.com/Lichess never populate this. Empty/0 = nothing
+  // to show right now; DisplayFunctions.cpp falls back to the normal move
+  // count display once millis() passes chessConnectMoveTextUntilMs.
+  char chessConnectMoveText[20];
+  unsigned long chessConnectMoveTextUntilMs;
 };
 
 #endif  // CLOCK_STATE_H

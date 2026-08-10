@@ -5,12 +5,21 @@
 #include "LichessApiFunctions.h"
 #include "LichessLiveClient.h"
 #include "AdminPortal.h"
+#include "ChessConnectBLE.h"
 
 DataSourceType currentDataSource = DATA_SOURCE_CHESSCOM_WIFI;
 
 const char *activeMyUsername() {
   switch (currentDataSource) {
     case DATA_SOURCE_LICHESS_WIFI: return lichessUsername;
+    // ChessConnect never discloses which side is the local player (only
+    // White/Black - see ChessConnectBLE.cpp's whiteIndex comment), so
+    // there's no username to return here. Explicit empty string rather
+    // than falling through to myUsername - that would only coincidentally
+    // fail to match "White"/"Black" today; this way it can never match by
+    // accident, and the intent (identity is genuinely unknown for this
+    // source) is visible in the code, not just implied.
+    case DATA_SOURCE_CHESSCONNECT_BLE: return "";
     case DATA_SOURCE_CHESSCOM_WIFI:
     default: return myUsername;
   }
@@ -258,12 +267,23 @@ static bool updateFromLichessWiFi(ClockState &state) {
   return true;
 }
 
-// ---- source: ChessConnect / DGT3000 via Bluetooth (NOT IMPLEMENTED YET) ----
+// ---- source: ChessConnect / DGT3000 via Bluetooth ----
+// Unlike chess.com/Lichess, there's no "poll for a new game" step here at
+// all - Chessconnect pushes everything proactively over BLE, applied via
+// gameDataSourceFastTick() -> chessConnectBleLoop() every loop() iteration
+// (see its override of the !hasGame early-return below, and
+// ChessConnectBLE.cpp for the actual translation). This function only
+// supplies a sensible waiting-screen status the very first time this
+// source is ever polled - after that, chessConnectBleLoop() (running far
+// more often) is the sole owner of state.apiStatus for this source.
 static bool updateFromChessConnectBLE(ClockState &state) {
-  // TODO: implement once the ChessConnect source code arrives.
-  snprintf(state.apiStatus, sizeof(state.apiStatus), "ChessConnect not implemented");
-  state.apiOk = false;
-  return false;
+  static bool initialStatusSet = false;
+  if (!initialStatusSet) {
+    initialStatusSet = true;
+    snprintf(state.apiStatus, sizeof(state.apiStatus), "Waiting for Chessconnect...");
+    state.apiOk = false;
+  }
+  return false;  // never "just found a new game" via this path - chessConnectBleLoop() already applies it directly when it happens
 }
 
 void initGameDataSource() {
@@ -353,6 +373,19 @@ static void lichessFastTick(ClockState &state) {
 }
 
 void gameDataSourceFastTick(ClockState &state) {
+  // ChessConnect must run BEFORE the !hasGame guard below, unlike the
+  // other two sources: BLE events (including the very first setTime of a
+  // brand new game, which is what SETS hasGame true in the first place)
+  // arrive independently of whatever hasGame currently is. chess.com/
+  // Lichess's fast-tick functions only ever pump an ALREADY-established
+  // live connection, so gating them behind hasGame is correct for them -
+  // it just isn't for a passive BLE peripheral waiting on its first
+  // command.
+  if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) {
+    chessConnectBleLoop(state);
+    return;
+  }
+
   if (!state.hasGame) {
     return;
   }
@@ -364,6 +397,6 @@ void gameDataSourceFastTick(ClockState &state) {
       chessComFastTick(state);
       return;
     default:
-      return;  // e.g. DATA_SOURCE_CHESSCONNECT_BLE - no live client to pump
+      return;
   }
 }

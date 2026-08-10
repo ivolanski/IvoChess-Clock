@@ -310,6 +310,11 @@ static void handleRoot() {
   html += "<h2>Data source</h2><div class='card'>";
   html += "<select name='datasrc'>";
   html += "<option value='0'"; html += (currentDataSource == DATA_SOURCE_CHESSCOM_WIFI ? " selected" : ""); html += ">Chess.com (live, over WiFi)</option>";
+  // No WiFi credentials to check here - ChessConnect is a BLE peripheral,
+  // always selectable (see GameDataSource.cpp/ChessConnectBLE.cpp). Shows
+  // "White"/"Black" instead of real names/ratings - this protocol never
+  // discloses either.
+  html += "<option value='1'"; html += (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE ? " selected" : ""); html += ">ChessConnect (Bluetooth, DGT3000 Gateway)</option>";
   // Only selectable once actually connected - picking a source with no
   // credentials would just show "No Lichess token set" (see
   // LichessApiFunctions.cpp's lichessFetchActiveGame()) instead of doing

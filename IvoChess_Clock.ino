@@ -68,6 +68,7 @@
 #include "BatteryFunctions.h"
 #include "TimeFunctions.h"
 #include "GameDataSource.h"
+#include "ChessConnectBLE.h"
 
 // IMPORTANT: the default ESP32 Arduino loop() task stack (often only
 // 8KB) is a well-known source of TLS/WSS connections failing silently
@@ -130,6 +131,7 @@ void setup() {
   initAdminPortal(&state);  // connects to saved WiFi OR starts the hotspot; loads PHPSESSID/language/source
   initTime();
   initGameDataSource();
+  initChessConnectBLE();
 
   updateWiFiStatus(state);
   updateBatteryInfo(state);
@@ -166,8 +168,52 @@ void loop() {
   }
 
   static int lastMoveCountSeen = -1;
-  bool moveChanged = state.hasGame && (state.moveCount != lastMoveCountSeen);
+  bool moveCountChanged = state.hasGame && (state.moveCount != lastMoveCountSeen);
   lastMoveCountSeen = state.moveCount;
+
+  // ChessConnect only (state.moveCount is always MOVE_COUNT_UNKNOWN there,
+  // so it never changes and moveCountChanged above would never fire on
+  // its own) - the bottom-bar move-text overlay (ChessConnectBLE.cpp,
+  // bottomBarMoveContent() in DisplayFunctions.cpp) needs its own change
+  // detection: once when it newly appears (or a fresh move text replaces
+  // one already showing) and once when it expires back to the normal
+  // move-count display.
+  static char lastRenderedChessConnectText[sizeof(state.chessConnectMoveText)] = "";
+  static bool chessConnectOverlayWasActive = false;
+  bool chessConnectOverlayActiveNow =
+      (state.chessConnectMoveTextUntilMs != 0) && (now < state.chessConnectMoveTextUntilMs);
+  bool chessConnectOverlayChanged =
+      (chessConnectOverlayActiveNow != chessConnectOverlayWasActive) ||
+      (chessConnectOverlayActiveNow && strcmp(state.chessConnectMoveText, lastRenderedChessConnectText) != 0);
+  if (chessConnectOverlayActiveNow) {
+    strncpy(lastRenderedChessConnectText, state.chessConnectMoveText, sizeof(lastRenderedChessConnectText) - 1);
+    lastRenderedChessConnectText[sizeof(lastRenderedChessConnectText) - 1] = '\0';
+  }
+  chessConnectOverlayWasActive = chessConnectOverlayActiveNow;
+
+  // BUG FOUND DURING REAL TESTING: the "play" triangle (drawPlayIcon(),
+  // part of drawRatingAndClock()) is only ever redrawn by the
+  // move-triggered path below (requestGameMovePartialRefresh()) - the
+  // per-second ticking path (requestGameClockPartialRefresh(), further
+  // below) redraws ONLY the clock digits, deliberately, to stay fast
+  // (see its own comment). For chess.com/Lichess this was never a
+  // problem because moveCountChanged fires on literally every move, and
+  // a side-switch only ever happens together with a move. ChessConnect
+  // breaks that assumption: moveCount is always MOVE_COUNT_UNKNOWN there
+  // (never changes), so moveCountChanged never fires at all - the active
+  // side would switch (clock digits correctly ticking the new side) while
+  // the triangle stayed stuck on the previous side until some UNRELATED
+  // redraw happened to occur later (reproduced live: "black's clock
+  // starts moving, play stays on white" for several seconds). Tracking
+  // activePlayerIndex itself is a more fundamentally correct trigger than
+  // moveCount ever was - added universally (not just for ChessConnect),
+  // since it can only ever fire additional necessary redraws, never
+  // spurious ones, for any source.
+  static int lastActivePlayerIndexSeen = -2;  // -2: sentinel distinct from the valid -1/0/1 values, so the very first tick doesn't itself count as a "change"
+  bool activeSideChanged = state.hasGame && (state.activePlayerIndex != lastActivePlayerIndexSeen);
+  lastActivePlayerIndexSeen = state.activePlayerIndex;
+
+  bool moveChanged = moveCountChanged || chessConnectOverlayChanged || activeSideChanged;
 
   bool showingResultNow = (state.resultDisplayUntilMs != 0) && (now < state.resultDisplayUntilMs);
   static bool wasShowingResult = false;
