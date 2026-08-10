@@ -8,9 +8,13 @@ when the game ends — without needing a phone or a PC nearby once it's set
 up. It's independent of any physical board or app: it talks straight to
 chess.com's or Lichess's own servers, the same way the website does.
 
+It also works over Bluetooth with [ChessConnect](https://chessconnect.de),
+for anyone bridging a physical board that way — pick "DGT3000 BLE Gateway"
+as the clock type and it shows up with no Wi-Fi login needed.
+
 **Full docs — hardware list, soldering guide, 3D-printed case, firmware
-build/flash instructions, daily use, webadmin, and how to safely connect
-your chess.com or Lichess account — live on the project site:**
+build/flash instructions, daily use, webadmin, and how to connect
+chess.com, Lichess, or ChessConnect — live on the project site:**
 **[ivochess.ivolanski.com](https://ivochess.ivolanski.com)**
 
 This project is an independent, community-built effort and is not
