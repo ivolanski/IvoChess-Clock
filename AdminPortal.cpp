@@ -238,6 +238,20 @@ static void handleRoot() {
     html += "<span class='pill bad'>Invalid - recapture cookie</span>";
   }
   html += "</div>";
+  {
+    // Surfaces the last time a renewal was actually REFUSED by chess.com
+    // and CHESSCOM_REMEMBERME discarded because of it - persisted to
+    // flash (getLastChessComSessionFailure()), so it's still visible here
+    // even after a reboot wiped the Serial log that would otherwise be
+    // the only record of it. Added after a real "worked all day, dead by
+    // morning" recurrence (2026-08-11) that had no evidence left to
+    // diagnose once the board was next power-cycled.
+    char failReason[48];
+    char failWhen[24];
+    if (getLastChessComSessionFailure(failReason, sizeof(failReason), failWhen, sizeof(failWhen))) {
+      html += "<div class='row'><small>Last drop: " + String(failReason) + " on " + String(failWhen) + "</small></div>";
+    }
+  }
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
   html += "<small>Step-by-step to get your remember me at: ivochess.ivolanski.com</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";

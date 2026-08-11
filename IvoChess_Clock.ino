@@ -69,6 +69,7 @@
 #include "TimeFunctions.h"
 #include "GameDataSource.h"
 #include "ChessConnectBLE.h"
+#include "ChessApiFunctions.h"
 
 // IMPORTANT: the default ESP32 Arduino loop() task stack (often only
 // 8KB) is a well-known source of TLS/WSS connections failing silently
@@ -160,6 +161,16 @@ void loop() {
   updateWiFiStatus(state);
   updateBatteryInfo(state);
   updateLEDs(state);
+
+  // Runs regardless of whether a game is active or idle-polling has
+  // stopped (WAITING_FOR_GAME_TIMEOUT_MS) - both of those states can
+  // leave CHESSCOM_REMEMBERME completely unexercised for a long stretch,
+  // which is what let a real one go stale from disuse undiscovered
+  // overnight. Self-gated by its own internal timer - see
+  // ChessApiFunctions.cpp for why this exists.
+  if (currentDataSource == DATA_SOURCE_CHESSCOM_WIFI) {
+    proactiveChessComSessionKeepAlive();
+  }
 
   bool gameDataChanged = updateGameData(state);
 

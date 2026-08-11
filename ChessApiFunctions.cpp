@@ -6,10 +6,46 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
+#include <time.h>
 
 static const char *USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// Forensic record of the last time CHESSCOM_REMEMBERME got discarded,
+// surviving a reboot (Serial history doesn't - the 2026-08-11 "session
+// expired overnight" recurrence was only diagnosable by INFERRING the
+// token was already empty at boot from an absence of log lines, since the
+// actual refusal that cleared it had happened before this capture ever
+// started and left no trace once the device was next power-cycled).
+// Own small NVS namespace, separate from AdminPortal's PREFS_NAMESPACE
+// settings blob, so this never collides with a settings key by accident.
+#define SESSION_FAIL_PREFS_NAMESPACE "ivochess_dbg"
+static void persistSessionFailure(const char *reason) {
+  char whenStr[24] = "unknown time";
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    strftime(whenStr, sizeof(whenStr), "%Y-%m-%d %H:%M", &timeinfo);
+  }
+  Preferences dbgPrefs;
+  dbgPrefs.begin(SESSION_FAIL_PREFS_NAMESPACE, /*readOnly=*/false);
+  dbgPrefs.putString("last_fail_why", reason);
+  dbgPrefs.putString("last_fail_when", whenStr);
+  dbgPrefs.end();
+}
+
+bool getLastChessComSessionFailure(char *reasonOut, size_t reasonLen, char *whenOut, size_t whenLen) {
+  Preferences dbgPrefs;
+  dbgPrefs.begin(SESSION_FAIL_PREFS_NAMESPACE, /*readOnly=*/true);
+  bool hasRecord = dbgPrefs.isKey("last_fail_why");
+  if (hasRecord) {
+    dbgPrefs.getString("last_fail_why", "").toCharArray(reasonOut, reasonLen);
+    dbgPrefs.getString("last_fail_when", "").toCharArray(whenOut, whenLen);
+  }
+  dbgPrefs.end();
+  return hasRecord;
+}
 
 // Persistent across calls (not reset each fetchActiveGame()) so cookies
 // behave like a real browser tab's jar - both PHPSESSID and
@@ -165,8 +201,16 @@ static bool syncJarToGlobalsIfChanged() {
 // is treated as "couldn't even try". The real test of success is the
 // caller's retry of the actual endpoint - if the jar didn't actually get
 // a working PHPSESSID, that retry will just 401 again.
-static bool renewSession() {
+static bool renewSession(bool wasProactive) {
   if (chessComRememberMe[0] == '\0') {
+    // Silent until now - this branch firing with nothing else printed
+    // around it is how we discovered CHESSCOM_REMEMBERME was already
+    // empty on a "session expired overnight" recurrence (2026-08-11):
+    // the log jumped straight from boot to the 401 failure with no
+    // "renewal returned HTTP.../refused" line in between, which only
+    // happens if renewSession() bailed out right here. Logging it removes
+    // the need to infer that from an absence of other log lines next time.
+    Serial.println("[ChessAPI] Renewal skipped - no CHESSCOM_REMEMBERME stored (already empty before this attempt).");
     return false;  // nothing to renew with - user needs to recapture both cookies
   }
 
@@ -223,6 +267,7 @@ static bool renewSession() {
   if (location.indexOf("login") >= 0) {
     Serial.println("[ChessAPI] Renewal was refused (redirected to login) - this CHESSCOM_REMEMBERME is dead.");
     Serial.println("[ChessAPI] Discarding it so it can't be replayed. Recapture BOTH cookies in the webadmin.");
+    persistSessionFailure(wasProactive ? "refused during proactive keep-alive" : "refused during 401 recovery");
     chessComRememberMe[0] = '\0';
     refreshSessionCookies();
     persistSessionCookies();
@@ -246,7 +291,7 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
   // 401 to discover what we already know.
   if (phpsessid[0] == '\0' && chessComRememberMe[0] != '\0') {
     Serial.println("[ChessAPI] No PHPSESSID stored - minting one from CHESSCOM_REMEMBERME before polling.");
-    renewSession();
+    renewSession(false);
   }
 
   if (phpsessid[0] == '\0' && chessComRememberMe[0] == '\0') {
@@ -292,7 +337,7 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
 
     if (httpCode == 401 || httpCode == 403) {
       http.end();
-      if (attempt == 0 && renewSession()) {
+      if (attempt == 0 && renewSession(false)) {
         // A retry immediately after renewal (same second) was observed
         // to still 401 once, even though the new PHPSESSID demonstrably
         // worked moments later (confirmed on a subsequent boot with the
@@ -376,6 +421,42 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
                 game.id);
 
   return true;
+}
+
+// Keeps CHESSCOM_REMEMBERME from ever going stale purely from disuse.
+// Without this, renewSession() only ever runs REACTIVELY - after a 401 on
+// /service/play/games - which itself only happens once PHPSESSID has gone
+// stale server-side. If chess.com extends PHPSESSID's server-side TTL on
+// ordinary API activity (plausible - many session stores use a sliding
+// expiration), a clock that's actively polling all day might never hit a
+// single 401, meaning CHESSCOM_REMEMBERME could go completely unexercised
+// for a long stretch. Investigating the 2026-08-11 "worked all day,
+// session dead by next morning" recurrence found CHESSCOM_REMEMBERME
+// already empty at boot with no renewal attempt logged in between - i.e.
+// it had already been silently refused and discarded at some earlier,
+// unwitnessed point, most plausibly while sitting untouched. A periodic
+// proactive touch, independent of whether anything is currently broken,
+// closes that gap: if the account's remember-me is a rolling-expiry
+// token, this keeps re-extending it before it can lapse from disuse. It
+// can't prevent an OUT-OF-BAND rotation from another logged-in
+// browser/device racing ours (that's a real possibility too, see
+// [[reference-chesscom-session-auth]] via project memory) - only chess.com's
+// own session model determines that - but it does shrink how long a dead
+// token can sit undetected from "up to a full idle period" down to at
+// most PROACTIVE_SESSION_KEEPALIVE_INTERVAL_MS, and the persisted
+// failure record above means the NEXT recurrence carries real evidence
+// even across a reboot.
+void proactiveChessComSessionKeepAlive() {
+  static unsigned long lastProactiveRenewalMs = 0;
+  unsigned long now = millis();
+  if (chessComRememberMe[0] == '\0') return;  // nothing to keep alive
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (lastProactiveRenewalMs != 0 && now - lastProactiveRenewalMs < PROACTIVE_SESSION_KEEPALIVE_INTERVAL_MS) return;
+  lastProactiveRenewalMs = now;
+
+  seedCookieJarIfNeeded();
+  Serial.println("[ChessAPI] Proactive keep-alive: touching the chess.com session before it can go stale from disuse.");
+  renewSession(true);
 }
 
 bool testChessComSession() {

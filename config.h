@@ -80,6 +80,16 @@
 // to play" action, not just a longer sleep.
 #define WAITING_FOR_GAME_TIMEOUT_MS (10UL * 60UL * 1000UL)
 
+// How often proactiveChessComSessionKeepAlive() (ChessApiFunctions.cpp)
+// touches the session even when nothing is currently broken - see its own
+// comment for why this exists (a real "session expired overnight"
+// recurrence traced to CHESSCOM_REMEMBERME going stale from disuse,
+// undetected until the next renewal attempt, possibly the next morning).
+// 30 minutes is comfortably below any plausible remember-me TTL while
+// still being a small fraction of chess.com's normal traffic from actual
+// gameplay polling.
+#define PROACTIVE_SESSION_KEEPALIVE_INTERVAL_MS (30UL * 60UL * 1000UL)
+
 // ---------------------------------------------------------------------------
 // LICHESS API (OAuth 2.0 + PKCE - see OAuthPkce.h/.cpp, LichessApiFunctions.h/.cpp)
 // ---------------------------------------------------------------------------

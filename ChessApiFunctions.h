@@ -33,4 +33,18 @@ void refreshSessionCookies();
 // the webadmin to show a green/red status on page load - see handleRoot().
 bool testChessComSession();
 
+// Call regularly (e.g. once per loop()) while WiFi is up. Self-gated by
+// its own internal timer (PROACTIVE_SESSION_KEEPALIVE_INTERVAL_MS) - cheap
+// to call often. See its definition in ChessApiFunctions.cpp for why this
+// exists: without it, CHESSCOM_REMEMBERME can go unexercised for long
+// stretches whenever PHPSESSID stays valid on its own, which is what let a
+// dead remember-me token sit undiscovered overnight in a real recurrence.
+void proactiveChessComSessionKeepAlive();
+
+// Reads back the last time (if any) a chess.com renewal was explicitly
+// refused and CHESSCOM_REMEMBERME discarded because of it - persisted to
+// flash so it survives a reboot, unlike Serial output. Returns false (and
+// leaves both buffers untouched) if no such event has ever been recorded.
+bool getLastChessComSessionFailure(char *reasonOut, size_t reasonLen, char *whenOut, size_t whenLen);
+
 #endif  // CHESS_API_FUNCTIONS_H
