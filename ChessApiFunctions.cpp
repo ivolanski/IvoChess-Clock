@@ -201,19 +201,9 @@ static bool syncJarToGlobalsIfChanged() {
 // is treated as "couldn't even try". The real test of success is the
 // caller's retry of the actual endpoint - if the jar didn't actually get
 // a working PHPSESSID, that retry will just 401 again.
-static bool renewSession(bool wasProactive) {
-  if (chessComRememberMe[0] == '\0') {
-    // Silent until now - this branch firing with nothing else printed
-    // around it is how we discovered CHESSCOM_REMEMBERME was already
-    // empty on a "session expired overnight" recurrence (2026-08-11):
-    // the log jumped straight from boot to the 401 failure with no
-    // "renewal returned HTTP.../refused" line in between, which only
-    // happens if renewSession() bailed out right here. Logging it removes
-    // the need to infer that from an absence of other log lines next time.
-    Serial.println("[ChessAPI] Renewal skipped - no CHESSCOM_REMEMBERME stored (already empty before this attempt).");
-    return false;  // nothing to renew with - user needs to recapture both cookies
-  }
+enum RenewAttemptResult { RENEW_OK, RENEW_REFUSED, RENEW_TRANSPORT_FAILED };
 
+static RenewAttemptResult renewSessionAttempt() {
   // Remember what we're about to present, so we can tell afterwards
   // whether the server actually rotated us onto a new token.
   String presentedToken = chessComRememberMe;
@@ -223,7 +213,7 @@ static bool renewSession(bool wasProactive) {
   HTTPClient http;
   http.setCookieJar(&sessionCookieJar);
   if (!http.begin(client, "https://www.chess.com/home")) {
-    return false;
+    return RENEW_TRANSPORT_FAILED;
   }
   http.addHeader("Accept", "text/html,application/xhtml+xml");
   http.addHeader("User-Agent", USER_AGENT);
@@ -242,7 +232,7 @@ static bool renewSession(bool wasProactive) {
 
   if (code <= 0) {
     Serial.printf("[ChessAPI] Session renewal request failed outright (%d) - network/timeout issue, not a cookie problem.\n", code);
-    return false;
+    return RENEW_TRANSPORT_FAILED;
   }
 
   Serial.printf("[ChessAPI] Session renewal returned HTTP %d%s\n", code,
@@ -256,25 +246,66 @@ static bool renewSession(bool wasProactive) {
     Serial.println("[ChessAPI] Note: remember-me token was NOT rotated by this response.");
   }
 
-  // Bounced to the login page = the token was refused. Keeping it around
-  // is actively harmful: CHESSCOM_REMEMBERME is single-use, so re-sending
-  // one the server has already rotated past looks like a stolen token
-  // rather than an expired one, and the usual defence is to drop every
-  // session for the account - which would keep killing sessions the user
-  // pastes in by hand, exactly the "I pasted a fresh cookie and it died
-  // again a few games later" symptom. Drop it and say plainly that BOTH
-  // cookies have to be recaptured.
   if (location.indexOf("login") >= 0) {
-    Serial.println("[ChessAPI] Renewal was refused (redirected to login) - this CHESSCOM_REMEMBERME is dead.");
+    return RENEW_REFUSED;
+  }
+  return RENEW_OK;
+}
+
+// Chess.com sits behind Cloudflare (confirmed live - Server: cloudflare,
+// cf-cache-status, etc. on every response), and this device's request
+// doesn't look like a real browser in ways that matter to bot-detection
+// (WiFiClientSecure's TLS stack has a different fingerprint than an
+// actual Chrome/Edge TLS handshake, no Sec-Fetch-*/browser-only headers).
+// A single ambiguous "redirected to login" could plausibly be a one-off
+// WAF challenge rather than genuine proof the token is dead - retrying
+// once before permanently discarding a token that two independently
+// captured real-browser copies proved is otherwise perfectly valid
+// (verified live 2026-08-11: a second, never-before-used browser's token
+// authenticated successfully) costs one extra request and meaningfully
+// lowers the odds of discarding a token that would have worked.
+static bool renewSession() {
+  if (chessComRememberMe[0] == '\0') {
+    // Silent until now - this branch firing with nothing else printed
+    // around it is how we discovered CHESSCOM_REMEMBERME was already
+    // empty on a "session expired overnight" recurrence (2026-08-11):
+    // the log jumped straight from boot to the 401 failure with no
+    // "renewal returned HTTP.../refused" line in between, which only
+    // happens if renewSession() bailed out right here. Logging it removes
+    // the need to infer that from an absence of other log lines next time.
+    Serial.println("[ChessAPI] Renewal skipped - no CHESSCOM_REMEMBERME stored (already empty before this attempt).");
+    return false;  // nothing to renew with - user needs to recapture both cookies
+  }
+
+  for (int attempt = 0; attempt < 2; attempt++) {
+    RenewAttemptResult result = renewSessionAttempt();
+    if (result == RENEW_OK) return true;
+    if (result == RENEW_TRANSPORT_FAILED) return false;  // network issue, not a cookie problem - don't burn the retry on it
+
+    // RENEW_REFUSED
+    if (attempt == 0) {
+      Serial.println("[ChessAPI] Renewal refused - retrying once before concluding the token is actually dead (could be a one-off WAF/bot-check, not just a replayed token).");
+      delay(2000);
+      continue;
+    }
+
+    // Bounced to the login page twice in a row = the token really is
+    // dead. Keeping it around is actively harmful: CHESSCOM_REMEMBERME is
+    // single-use, so re-sending one the server has already rotated past
+    // looks like a stolen token rather than an expired one, and the usual
+    // defence is to drop every session for the account - which would keep
+    // killing sessions the user pastes in by hand, exactly the "I pasted
+    // a fresh cookie and it died again a few games later" symptom. Drop
+    // it and say plainly that BOTH cookies have to be recaptured.
+    Serial.println("[ChessAPI] Renewal was refused twice (redirected to login both times) - this CHESSCOM_REMEMBERME is dead.");
     Serial.println("[ChessAPI] Discarding it so it can't be replayed. Recapture BOTH cookies in the webadmin.");
-    persistSessionFailure(wasProactive ? "refused during proactive keep-alive" : "refused during 401 recovery");
+    persistSessionFailure("refused during renewal (twice)");
     chessComRememberMe[0] = '\0';
     refreshSessionCookies();
     persistSessionCookies();
     return false;
   }
-
-  return true;  // "attempted and wasn't refused" - the caller's retry is the real success check
+  return false;  // unreachable
 }
 
 bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
@@ -291,7 +322,7 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
   // 401 to discover what we already know.
   if (phpsessid[0] == '\0' && chessComRememberMe[0] != '\0') {
     Serial.println("[ChessAPI] No PHPSESSID stored - minting one from CHESSCOM_REMEMBERME before polling.");
-    renewSession(false);
+    renewSession();
   }
 
   if (phpsessid[0] == '\0' && chessComRememberMe[0] == '\0') {
@@ -337,7 +368,7 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
 
     if (httpCode == 401 || httpCode == 403) {
       http.end();
-      if (attempt == 0 && renewSession(false)) {
+      if (attempt == 0 && renewSession()) {
         // A retry immediately after renewal (same second) was observed
         // to still 401 once, even though the new PHPSESSID demonstrably
         // worked moments later (confirmed on a subsequent boot with the
@@ -421,42 +452,6 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
                 game.id);
 
   return true;
-}
-
-// Keeps CHESSCOM_REMEMBERME from ever going stale purely from disuse.
-// Without this, renewSession() only ever runs REACTIVELY - after a 401 on
-// /service/play/games - which itself only happens once PHPSESSID has gone
-// stale server-side. If chess.com extends PHPSESSID's server-side TTL on
-// ordinary API activity (plausible - many session stores use a sliding
-// expiration), a clock that's actively polling all day might never hit a
-// single 401, meaning CHESSCOM_REMEMBERME could go completely unexercised
-// for a long stretch. Investigating the 2026-08-11 "worked all day,
-// session dead by next morning" recurrence found CHESSCOM_REMEMBERME
-// already empty at boot with no renewal attempt logged in between - i.e.
-// it had already been silently refused and discarded at some earlier,
-// unwitnessed point, most plausibly while sitting untouched. A periodic
-// proactive touch, independent of whether anything is currently broken,
-// closes that gap: if the account's remember-me is a rolling-expiry
-// token, this keeps re-extending it before it can lapse from disuse. It
-// can't prevent an OUT-OF-BAND rotation from another logged-in
-// browser/device racing ours (that's a real possibility too, see
-// [[reference-chesscom-session-auth]] via project memory) - only chess.com's
-// own session model determines that - but it does shrink how long a dead
-// token can sit undetected from "up to a full idle period" down to at
-// most PROACTIVE_SESSION_KEEPALIVE_INTERVAL_MS, and the persisted
-// failure record above means the NEXT recurrence carries real evidence
-// even across a reboot.
-void proactiveChessComSessionKeepAlive() {
-  static unsigned long lastProactiveRenewalMs = 0;
-  unsigned long now = millis();
-  if (chessComRememberMe[0] == '\0') return;  // nothing to keep alive
-  if (WiFi.status() != WL_CONNECTED) return;
-  if (lastProactiveRenewalMs != 0 && now - lastProactiveRenewalMs < PROACTIVE_SESSION_KEEPALIVE_INTERVAL_MS) return;
-  lastProactiveRenewalMs = now;
-
-  seedCookieJarIfNeeded();
-  Serial.println("[ChessAPI] Proactive keep-alive: touching the chess.com session before it can go stale from disuse.");
-  renewSession(true);
 }
 
 bool testChessComSession() {
