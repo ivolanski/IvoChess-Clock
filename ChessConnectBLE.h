@@ -41,4 +41,16 @@ void chessConnectBleLoop(ClockState &state);
 // event queue's ordering guarantees.
 bool chessConnectBleIsConnected();
 
+// Sends a single {"type":"buttonEvent","data":{"isRepeat":false}}
+// notification - the "press clock to transmit move" trigger (see
+// project_details/dgt3000-gateway-protocol.md §5.1). Called from the MAIN
+// task (ButtonFunctions.cpp, on a debounced button press - the protocol
+// requires exactly one event per physical press, which the button's own
+// debounce already guarantees). A no-op if no Chessconnect central is
+// currently connected. Doesn't touch ClockState, so - unlike inbound BLE
+// commands - this doesn't need the queue hand-off described above; it only
+// ever writes out to the BLE stack, the same direct-notify pattern
+// ChessConnectBLE.cpp's own sendAck() already uses.
+void chessConnectSendButtonEvent();
+
 #endif  // CHESSCONNECT_BLE_H

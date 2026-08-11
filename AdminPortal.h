@@ -2,6 +2,8 @@
 #define ADMIN_PORTAL_H
 
 #include "ClockState.h"
+#include "SoundFunctions.h"  // SoundEvent, SOUND_EVENT_COUNT - for soundEnabled[]/soundMelodyOverride[] below
+#include "config.h"          // SOUND_MELODY_MAX_LEN
 
 // Global buffer with the current PHPSESSID (used by ChessApiFunctions).
 // ChessApiFunctions.cpp updates this IN PLACE (and persists it via
@@ -59,6 +61,18 @@ extern uint8_t ledBrightnessNight;
 // How long (ms) the game-over result stays on screen before returning to
 // the waiting/status screen. Configurable in seconds in the admin portal.
 extern unsigned long resultDisplayDurationMs;
+
+// Sound settings (see SoundFunctions.cpp) - indexed by SoundEvent. Each
+// event can be muted independently (soundEnabled) and/or given a custom
+// melody (soundMelodyOverride) - empty string means "use the compiled-in
+// DEFAULT_SOUND_* from config.h". Note availability differs per event/data
+// source: SOUND_CHECK only ever fires via ChessConnect (see
+// ChessConnectBLE.cpp); SOUND_GAME_WIN/LOSS/DRAW only fire when
+// activeMyUsername() resolves (chess.com/Lichess with a username
+// configured) - everything else (including all of ChessConnect's game
+// endings) falls through to SOUND_GAME_END instead.
+extern bool soundEnabled[SOUND_EVENT_COUNT];
+extern char soundMelodyOverride[SOUND_EVENT_COUNT][SOUND_MELODY_MAX_LEN];
 
 // Persists the CURRENT phpsessid/chessComRememberMe to Preferences -
 // called by ChessApiFunctions.cpp after a successful session renewal, so

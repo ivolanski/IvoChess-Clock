@@ -49,6 +49,35 @@
 #define LED_PIN     D7
 #define CONFIG_RESET_BUTTON_PIN D6  // optional external button (not the board's physical BOOT button)
 
+// ---------------------------------------------------------------------------
+// PHYSICAL BUTTON (top of the clock) - momentary switch, D0 to GND, internal
+// pull-up, no external resistor needed. Dual purpose depending on
+// currentDataSource (see ButtonFunctions.cpp): resumes game search
+// (chess.com/Lichess) or sends ChessConnect's buttonEvent ("press clock to
+// transmit move" - see project_details/dgt3000-gateway-protocol.md).
+// ---------------------------------------------------------------------------
+#define BUTTON_PIN D0
+#define BUTTON_DEBOUNCE_MS 40
+
+// ---------------------------------------------------------------------------
+// SPEAKER (bare passive driver, PWM via LEDC + a one-transistor amplifier -
+// see project_details/ivochess_clock_2.0_resources/wiring_instructions.md).
+// Melody format: comma-separated "freqHz:durationMs" pairs, freq=0 = rest.
+// These are only the compiled-in DEFAULTS - the admin portal lets each event
+// be overridden with a custom melody string (SoundFunctions.cpp).
+// ---------------------------------------------------------------------------
+#define SPEAKER_PIN D2
+#define SOUND_MELODY_MAX_LEN 200
+
+#define DEFAULT_SOUND_MOVE_OPPONENT "880:60"
+#define DEFAULT_SOUND_MOVE_OWN      "659:60"
+#define DEFAULT_SOUND_GAME_START    "523:100,659:100,784:100,1047:150"
+#define DEFAULT_SOUND_CHECK         "1200:80,0:40,1200:80"
+#define DEFAULT_SOUND_GAME_WIN      "523:120,659:120,784:120,1047:120,1319:250"
+#define DEFAULT_SOUND_GAME_LOSS     "392:200,349:200,294:200,220:400"
+#define DEFAULT_SOUND_GAME_DRAW     "440:150,440:150,440:300"
+#define DEFAULT_SOUND_GAME_END      "659:120,523:250"
+
 #define FULL_REFRESH_INTERVAL_MS (5UL * 60UL * 1000UL)
 
 // Alternates between the logo screen (clean) and the status screen every
@@ -73,12 +102,14 @@
 // If nobody starts a game for this long while the clock sits idle, stop
 // polling /service/play/games entirely instead of hitting it every
 // GAME_POLL_INTERVAL_MS forever - a clock left on 24/7 with no one
-// playing has no business generating ~17k requests/day indefinitely.
-// Deliberately requires a physical restart to resume (see
-// GameDataSource.cpp) rather than a timer that quietly starts polling
-// again on its own - the point is to force a conscious "yes, I'm about
-// to play" action, not just a longer sleep.
-#define WAITING_FOR_GAME_TIMEOUT_MS (10UL * 60UL * 1000UL)
+// playing has no business generating requests indefinitely. Resumed by a
+// press of the physical button (see ButtonFunctions.cpp/
+// GameDataSource.cpp's resumeGameSearch()) rather than a timer that quietly
+// starts polling again on its own - the point is to force a conscious
+// "yes, I'm about to play" action, not just a longer sleep. Used to require
+// a full physical restart before the button existed; 5 minutes (rather than
+// the old 10) since a button press is now a one-touch way to resume.
+#define WAITING_FOR_GAME_TIMEOUT_MS (5UL * 60UL * 1000UL)
 
 // ---------------------------------------------------------------------------
 // LICHESS API (OAuth 2.0 + PKCE - see OAuthPkce.h/.cpp, LichessApiFunctions.h/.cpp)

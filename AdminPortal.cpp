@@ -30,6 +30,28 @@ uint8_t ledBrightnessDay = DEFAULT_LED_BRIGHTNESS;
 uint8_t ledBrightnessNight = DEFAULT_LED_BRIGHTNESS_NIGHT;
 unsigned long resultDisplayDurationMs = DEFAULT_RESULT_DISPLAY_DURATION_SEC * 1000UL;
 
+bool soundEnabled[SOUND_EVENT_COUNT];
+char soundMelodyOverride[SOUND_EVENT_COUNT][SOUND_MELODY_MAX_LEN];
+
+// Short NVS-key suffix + webadmin label per event, indexed the same as
+// soundEnabled[]/soundMelodyOverride[] - the one place that ties
+// SoundEvent values to their on-disk/on-page identity, so adding an event
+// later means touching only this table plus config.h's DEFAULT_SOUND_*.
+struct SoundEventMeta {
+  const char *key;    // NVS key suffix (kept short - Preferences keys cap at 15 chars) and the webadmin form field/route suffix
+  const char *label;
+};
+static const SoundEventMeta SOUND_EVENT_META[SOUND_EVENT_COUNT] = {
+  {"start", "Game started"},
+  {"mvopp", "Opponent's move"},
+  {"mvown", "Your move"},
+  {"check", "Check (ChessConnect only)"},
+  {"win",   "You won"},
+  {"loss",  "You lost"},
+  {"draw",  "Draw"},
+  {"end",   "Game ended (result unknown)"},
+};
+
 static char wifiSSID[WIFI_SSID_MAX_LEN] = DEFAULT_WIFI_SSID;
 static char wifiPassword[WIFI_PASS_MAX_LEN] = DEFAULT_WIFI_PASSWORD;
 static char webAdminUser[WEBADMIN_USER_MAX_LEN] = DEFAULT_WEBADMIN_USER;
@@ -98,6 +120,14 @@ static void loadConfig() {
 
   resultDisplayDurationMs = (unsigned long)prefs.getUInt("result_dur_s", DEFAULT_RESULT_DISPLAY_DURATION_SEC) * 1000UL;
 
+  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+    char enKey[16], melKey[16];
+    snprintf(enKey, sizeof(enKey), "snd_en_%s", SOUND_EVENT_META[i].key);
+    snprintf(melKey, sizeof(melKey), "snd_mel_%s", SOUND_EVENT_META[i].key);
+    soundEnabled[i] = prefs.getBool(enKey, true);  // all events on by default
+    prefs.getString(melKey, "").toCharArray(soundMelodyOverride[i], SOUND_MELODY_MAX_LEN);
+  }
+
   prefs.end();
 }
 
@@ -126,6 +156,14 @@ static void saveConfig() {
   prefs.putUInt("led_bright_night", ledBrightnessNight);
 
   prefs.putUInt("result_dur_s", (unsigned int)(resultDisplayDurationMs / 1000UL));
+
+  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+    char enKey[16], melKey[16];
+    snprintf(enKey, sizeof(enKey), "snd_en_%s", SOUND_EVENT_META[i].key);
+    snprintf(melKey, sizeof(melKey), "snd_mel_%s", SOUND_EVENT_META[i].key);
+    prefs.putBool(enKey, soundEnabled[i]);
+    prefs.putString(melKey, soundMelodyOverride[i]);
+  }
 
   prefs.end();
 }
@@ -352,6 +390,26 @@ static void handleRoot() {
   html += "<label>Brightness - night (0-255)</label><input type='number' name='led_bright_night' min='0' max='255' value='" + String(ledBrightnessNight) + "'>";
   html += "</div>";
 
+  html += "<h2>Sound</h2><div class='card'>";
+  html += "<small>Each event: enable/mute, and an optional custom melody - comma-separated "
+          "<code>freqHz:durationMs</code> notes (e.g. <code>523:100,659:100,0:50,784:150</code>, "
+          "<code>0</code> = silence/rest). Leave blank to use the built-in default shown as a placeholder.</small>";
+  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+    const SoundEventMeta &meta = SOUND_EVENT_META[i];
+    html += "<div class='colorrow' style='align-items:flex-start;margin-top:16px'>";
+    html += "<label style='flex:none;width:20px;margin-top:8px'><input type='checkbox' name='snd_en_" + String(meta.key) + "'";
+    html += (soundEnabled[i] ? " checked" : "");
+    html += "></label>";
+    html += "<div style='flex:1'>";
+    html += "<label style='margin:0 0 4px'>" + String(meta.label) + "</label>";
+    html += "<input type='text' name='snd_mel_" + String(meta.key) + "' value='" + String(soundMelodyOverride[i]) +
+            "' placeholder='" + String(soundDefaultMelody((SoundEvent)i)) + "'>";
+    html += "<button type='submit' formaction='/sound/reset' formmethod='POST' name='sndevt' value='" + String(meta.key) +
+            "' style='margin-top:6px;padding:8px;font-size:0.8rem;font-weight:500'>Reset to default</button>";
+    html += "</div></div>";
+  }
+  html += "</div>";
+
   html += "<h2>Webadmin access</h2><div class='card'>";
   html += "<label>Username</label><input type='text' name='adminuser' value='" + String(webAdminUser) + "' autocomplete='off'>";
   html += "<label>Password</label><input type='password' name='adminpass' placeholder='(leave empty to keep current)' autocomplete='new-password'>";
@@ -432,6 +490,20 @@ static void handleSave() {
   if (server.hasArg("led_oppturn")) hexToRgb(server.arg("led_oppturn"), ledColorOpponentTurn);
   if (server.hasArg("led_bright_day")) ledBrightnessDay = (uint8_t)constrain(server.arg("led_bright_day").toInt(), 0, 255);
   if (server.hasArg("led_bright_night")) ledBrightnessNight = (uint8_t)constrain(server.arg("led_bright_night").toInt(), 0, 255);
+
+  // Checkboxes are only present in the POST body when checked - unlike the
+  // hasArg()+non-empty guards above (which preserve the current value when
+  // a field is left blank), a MISSING snd_en_* here genuinely means the
+  // user unchecked it, so presence alone (not content) is what toggles it.
+  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+    char enKey[16], melKey[16];
+    snprintf(enKey, sizeof(enKey), "snd_en_%s", SOUND_EVENT_META[i].key);
+    snprintf(melKey, sizeof(melKey), "snd_mel_%s", SOUND_EVENT_META[i].key);
+    soundEnabled[i] = server.hasArg(enKey);
+    if (server.hasArg(melKey)) {
+      server.arg(melKey).toCharArray(soundMelodyOverride[i], SOUND_MELODY_MAX_LEN);
+    }
+  }
 
   saveConfig();
 
@@ -583,6 +655,28 @@ static void handleLichessDisconnect() {
 // the request no longer reaches handleRoot() at all. No checkAuth() -
 // there's nothing here worth protecting, and browsers request this
 // before any login has necessarily happened.
+// POST /sound/reset - clears one event's custom melody back to the
+// compiled-in default (SoundFunctions.cpp's soundDefaultMelody()). Only
+// resets soundMelodyOverride, not soundEnabled - "reset to default sound"
+// shouldn't also silently re-enable an event the user deliberately muted.
+static void handleSoundReset() {
+  if (!checkAuth()) return;
+
+  String key = server.arg("sndevt");
+  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+    if (key == SOUND_EVENT_META[i].key) {
+      soundMelodyOverride[i][0] = '\0';
+      saveConfig();
+      Serial.printf("[AdminPortal] Sound '%s' reset to default melody.\n", SOUND_EVENT_META[i].key);
+      break;
+    }
+  }
+
+  server.send(200, "text/html",
+              "<html><head><meta http-equiv='refresh' content='0;url=/'></head>"
+              "<body></body></html>");
+}
+
 static void handleFavicon() {
   server.send_P(200, PSTR("image/png"), (PGM_P)FAVICON_PNG, FAVICON_PNG_LEN);
 }
@@ -638,6 +732,7 @@ void initAdminPortal(ClockState *statePtr) {
   server.on("/", handleRoot);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/chesscom/invalidate", HTTP_POST, handleChessComInvalidate);
+  server.on("/sound/reset", HTTP_POST, handleSoundReset);
   server.on("/favicon.ico", handleFavicon);
   server.on(LICHESS_OAUTH_CALLBACK_PATH, handleLichessOAuthCallback);
   server.on("/oauth/lichess/disconnect", HTTP_POST, handleLichessDisconnect);

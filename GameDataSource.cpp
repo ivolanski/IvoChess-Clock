@@ -25,6 +25,15 @@ const char *activeMyUsername() {
   }
 }
 
+int resolveMyPlayerIndex(const ClockState &state) {
+  const char *me = activeMyUsername();
+  if (me[0] == '\0') return -1;
+  for (int i = 0; i < 2; i++) {
+    if (strcasecmp(state.players[i].username, me) == 0) return i;
+  }
+  return -1;
+}
+
 static GameInfo currentGame;
 static unsigned long lastPollAttempt = 0;
 
@@ -130,6 +139,7 @@ static bool updateFromChessComWiFi(ClockState &state) {
     state.clockBaselineMs[0] = currentGame.players[0].clockMs;
     state.clockBaselineMs[1] = currentGame.players[1].clockMs;
     state.clockBaselineAtMs = now;
+    state.newGameStarted = true;  // pulse - a genuinely new game, not a reconnect (see ClockState.h)
 
     // Defensive: a new game starting always takes display priority over
     // any still-counting-down result screen anyway (see
@@ -253,6 +263,7 @@ static bool updateFromLichessWiFi(ClockState &state) {
     state.clockBaselineMs[0] = 0;
     state.clockBaselineMs[1] = 0;
     state.clockBaselineAtMs = now;
+    state.newGameStarted = true;  // pulse - a genuinely new game, not a reconnect (see ClockState.h)
 
     // Same defensive clear as chess.com's new-game path - see its
     // comment above for why (fast back-to-back games, display priority).
@@ -265,6 +276,21 @@ static bool updateFromLichessWiFi(ClockState &state) {
   lichessLiveConnectStartedAt = now;
   lichessLiveConnect(currentLichessGame, lichessToken);
   return true;
+}
+
+// Resets both sources' idle-timeout statics unconditionally rather than
+// branching on currentDataSource - only the active source's statics matter
+// at any given moment, so touching the inactive one too is harmless and
+// keeps this a single call site for ButtonFunctions.cpp instead of one per
+// source.
+void resumeGameSearch(ClockState &state) {
+  unsigned long now = millis();
+  idleSinceMs = now;
+  pollingStoppedUntilRestart = false;
+  lichessIdleSinceMs = now;
+  lichessPollingStoppedUntilRestart = false;
+  state.waitingTimedOut = false;
+  Serial.println("[GameDataSource] Button pressed - resuming game search.");
 }
 
 // ---- source: ChessConnect / DGT3000 via Bluetooth ----

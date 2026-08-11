@@ -26,21 +26,6 @@ void clearLEDs() {
   setAllLEDs(0, 0, 0);
 }
 
-// Which of state.players[0]/[1] is "me" - same match DisplayFunctions.cpp
-// uses to decide who goes in the bottom row, so the "your turn" LED color
-// lines up with what's actually shown on screen instead of being tied to
-// the server's raw (arbitrary) player order. Uses activeMyUsername()
-// (GameDataSource.h), not a hardcoded chess.com global - see its comment
-// for why that distinction matters once more than one data source exists.
-static int myPlayerIndex(const ClockState &state) {
-  const char *me = activeMyUsername();
-  if (me[0] == '\0') return -1;
-  for (int i = 0; i < 2; i++) {
-    if (strcasecmp(state.players[i].username, me) == 0) return i;
-  }
-  return -1;
-}
-
 // The case diffuses the light (individual LEDs aren't visible) - that's
 // why the WHOLE strip changes color together, instead of splitting it
 // per-player or per-pixel.
@@ -59,7 +44,7 @@ void updateLEDs(const ClockState &state) {
   uint8_t baseColor[3];
 
   if (state.hasGame) {
-    int meIdx = myPlayerIndex(state);
+    int meIdx = resolveMyPlayerIndex(state);
     if (state.activePlayerIndex == -1) {
       memcpy(baseColor, ledColorDraw, 3);  // whose turn isn't known yet - neutral color
     } else if (meIdx != -1) {

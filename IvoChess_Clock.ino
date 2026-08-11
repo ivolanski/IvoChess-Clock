@@ -69,6 +69,8 @@
 #include "TimeFunctions.h"
 #include "GameDataSource.h"
 #include "ChessConnectBLE.h"
+#include "ButtonFunctions.h"
+#include "SoundFunctions.h"
 
 // IMPORTANT: the default ESP32 Arduino loop() task stack (often only
 // 8KB) is a well-known source of TLS/WSS connections failing silently
@@ -117,6 +119,10 @@ static ClockState state = {
   .lastDisplayUpdate = 0,
   .lastFullRefresh = 0,
   .lastGameActiveAt = 0,
+
+  .chessConnectMoveText = "",
+  .chessConnectMoveTextUntilMs = 0,
+  .newGameStarted = false,
 };
 
 void setup() {
@@ -127,6 +133,8 @@ void setup() {
   startDisplayTask();  // owns initDisplay()/drawStartupScreen() itself now - see DisplayFunctions.cpp
   initLEDs();
   initBatteryADC();
+  initButton();
+  initSoundTask();
 
   initAdminPortal(&state);  // connects to saved WiFi OR starts the hotspot; loads PHPSESSID/language/source
   initTime();
@@ -149,6 +157,7 @@ void loop() {
   // would feel slow.
   handleAdminPortal();
   gameDataSourceFastTick(state);
+  updateButton(state);  // must feel instant - not gated behind the 1s tick below
 
   static unsigned long lastTick = 0;
   unsigned long now = millis();
@@ -165,6 +174,11 @@ void loop() {
 
   if (state.hasGame) {
     state.lastGameActiveAt = now;
+  }
+
+  if (state.newGameStarted) {
+    state.newGameStarted = false;  // one-shot pulse - see ClockState.h
+    playSoundEvent(SOUND_GAME_START);
   }
 
   static int lastMoveCountSeen = -1;
@@ -210,8 +224,25 @@ void loop() {
   // since it can only ever fire additional necessary redraws, never
   // spurious ones, for any source.
   static int lastActivePlayerIndexSeen = -2;  // -2: sentinel distinct from the valid -1/0/1 values, so the very first tick doesn't itself count as a "change"
+  int previousActivePlayerIndex = lastActivePlayerIndexSeen;
   bool activeSideChanged = state.hasGame && (state.activePlayerIndex != lastActivePlayerIndexSeen);
   lastActivePlayerIndexSeen = state.activePlayerIndex;
+
+  // Own-move/opponent-move sound: only for a REAL mid-game side-switch
+  // (previousActivePlayerIndex already 0/1), not the initial -1/-2 -> 0/1
+  // transition at game start (that's SOUND_GAME_START's job, above). If
+  // "me" can't be resolved (ChessConnect, or myUsername/lichessUsername
+  // not configured - resolveMyPlayerIndex(), GameDataSource.cpp) this is
+  // skipped entirely rather than guessed - ChessConnect's own opponent-move
+  // sound already fires separately, from its displayText handling
+  // (ChessConnectBLE.cpp), since that's the only place it can reliably
+  // tell a move happened at all.
+  if (activeSideChanged && (previousActivePlayerIndex == 0 || previousActivePlayerIndex == 1)) {
+    int meIdx = resolveMyPlayerIndex(state);
+    if (meIdx == 0 || meIdx == 1) {
+      playSoundEvent((state.activePlayerIndex == meIdx) ? SOUND_MOVE_OPPONENT : SOUND_MOVE_OWN);
+    }
+  }
 
   bool moveChanged = moveCountChanged || chessConnectOverlayChanged || activeSideChanged;
 
@@ -225,6 +256,21 @@ void loop() {
     state.lastResultSummary[0] = '\0';
     state.lastGameOutcome = OUTCOME_NONE;
     state.resultDisplayUntilMs = 0;
+  }
+  if (resultWindowChanged && showingResultNow) {
+    // The result screen just appeared - play the matching sound exactly
+    // once. OUTCOME_NONE (ChessConnect always - it can never resolve
+    // win/loss for the local player, see ChessConnectBLE.cpp's whiteIndex
+    // comment - or chess.com/Lichess without myUsername configured) falls
+    // through to the generic SOUND_GAME_END so a game ending is never
+    // silent.
+    switch (state.lastGameOutcome) {
+      case OUTCOME_WIN:  playSoundEvent(SOUND_GAME_WIN);  break;
+      case OUTCOME_LOSS: playSoundEvent(SOUND_GAME_LOSS); break;
+      case OUTCOME_DRAW: playSoundEvent(SOUND_GAME_DRAW); break;
+      case OUTCOME_NONE:
+      default:           playSoundEvent(SOUND_GAME_END);  break;
+    }
   }
   wasShowingResult = showingResultNow;
 

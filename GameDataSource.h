@@ -30,7 +30,24 @@ extern DataSourceType currentDataSource;
 // showing wrong LED colors and win/loss.
 const char *activeMyUsername();
 
+// Which of state.players[0]/[1] is "me" (activeMyUsername() match), or -1
+// if unknown/unresolvable (ChessConnect never discloses this - see
+// activeMyUsername() above - or activeMyUsername() isn't configured).
+// Shared by LedFunctions.cpp (whose-turn LED color) and IvoChess_Clock.ino
+// (own-move vs opponent-move sound trigger) so there's exactly one
+// implementation of "who is me" instead of two copies that could drift.
+int resolveMyPlayerIndex(const ClockState &state);
+
 void initGameDataSource();
+
+// Clears the idle-timeout state (both chess.com's and Lichess's - only the
+// currently active source's statics actually matter, but resetting both is
+// harmless and simpler than branching on currentDataSource here) and
+// state.waitingTimedOut, so polling for a new game resumes immediately.
+// Called from ButtonFunctions.cpp on a button press while NOT using
+// ChessConnect - the button's replacement for the old "must physically
+// restart the board" requirement.
+void resumeGameSearch(ClockState &state);
 
 // Call ~once per second: polls for a new active game over HTTP when
 // idle, and updates state.apiStatus/apiOk. Returns true if something

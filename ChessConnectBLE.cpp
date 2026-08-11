@@ -6,6 +6,7 @@
 // project_details/dgt3000-gateway-protocol.md's own examples.
 #include "ChessConnectBLE.h"
 #include "AdminPortal.h"  // resultDisplayDurationMs
+#include "SoundFunctions.h"
 
 #include <ArduinoJson.h>
 #include <BLEDevice.h>
@@ -233,6 +234,13 @@ bool chessConnectBleIsConnected() {
   return bleConnected;
 }
 
+void chessConnectSendButtonEvent() {
+  if (!bleConnected || !eventChar) return;
+  static const char *payload = "{\"type\":\"buttonEvent\",\"data\":{\"isRepeat\":false}}";
+  eventChar->setValue((uint8_t *)payload, strlen(payload));
+  eventChar->notify();
+}
+
 void initChessConnectBLE() {
   eventQueue = xQueueCreate(CC_EVENT_QUEUE_LEN, sizeof(ChessConnectEvent));
 
@@ -385,6 +393,7 @@ static void applyEvent(const ChessConnectEvent &event, ClockState &state) {
         state.lastResultSummary[0] = '\0';
         state.lastGameOutcome = OUTCOME_NONE;
         state.chessConnectMoveTextUntilMs = 0;
+        state.newGameStarted = true;  // pulse - see ClockState.h
       }
       break;
     }
@@ -452,13 +461,33 @@ static void applyEvent(const ChessConnectEvent &event, ClockState &state) {
         // without this, a duplicate would flip the side AGAIN, undoing
         // the correct prediction the first copy just made.
         static char lastMoveTextSeen[CC_TEXT_MAX_LEN] = "";
-        if (strcmp(event.text, lastMoveTextSeen) != 0 &&
-            (state.activePlayerIndex == 0 || state.activePlayerIndex == 1)) {
+        bool isNewMoveText = strcmp(event.text, lastMoveTextSeen) != 0;
+
+        if (isNewMoveText && (state.activePlayerIndex == 0 || state.activePlayerIndex == 1)) {
           int newActive = 1 - state.activePlayerIndex;
           state.activePlayerIndex = newActive;
           state.clockBaselineMs[newActive] = state.players[newActive].clockMs;
           state.clockBaselineAtMs = millis();
         }
+
+        // Per the protocol doc, displayText that isn't a result IS always
+        // the opponent's move - this is the only source with move
+        // notation at all (chess.com/Lichess never send SAN, only a move
+        // count - see GameDataSource.cpp's research notes), so it's also
+        // the only source where "check" is cheaply detectable: SAN move
+        // text ends in '+' for check ('#' for checkmate, deliberately not
+        // handled here - that's already covered a moment later by the
+        // game_end sound once the result text arrives). Gated on
+        // isNewMoveText for the same reason the side-flip above is - the
+        // same text can arrive 2-3 times within ~150ms.
+        if (isNewMoveText) {
+          playSoundEvent(SOUND_MOVE_OPPONENT);
+          size_t textLen = strlen(event.text);
+          if (textLen > 0 && event.text[textLen - 1] == '+') {
+            playSoundEvent(SOUND_CHECK);
+          }
+        }
+
         strncpy(lastMoveTextSeen, event.text, sizeof(lastMoveTextSeen) - 1);
         lastMoveTextSeen[sizeof(lastMoveTextSeen) - 1] = '\0';
       }

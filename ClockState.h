@@ -109,6 +109,14 @@ struct ClockState {
   // count display once millis() passes chessConnectMoveTextUntilMs.
   char chessConnectMoveText[20];
   unsigned long chessConnectMoveTextUntilMs;
+
+  // One-shot pulse: true for exactly one loop() iteration right after a
+  // GENUINELY NEW game is detected (never on a reconnect to an
+  // already-in-progress game - see GameDataSource.cpp's sameGameAsBefore/
+  // wasNewGame checks, the only places this is ever set true). Read and
+  // cleared by IvoChess_Clock.ino to trigger the "game started" sound
+  // exactly once per real new game, never on a live-connection blip.
+  bool newGameStarted;
 };
 
 #endif  // CLOCK_STATE_H
