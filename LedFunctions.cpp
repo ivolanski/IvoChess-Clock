@@ -8,6 +8,45 @@
 
 static Adafruit_NeoPixel strip(LED_COUNT, LED_DATA_PIN, NEO_GRB + NEO_KHZ800);
 
+// LED_COUNT (config.h) is only the first-boot default now - setLedCount()
+// below can change the strip's actual driven length at runtime, and
+// everything else in this file reads it back via strip.numPixels() rather
+// than the LED_COUNT macro, so a different physical strip length (set from
+// the webadmin) just works without a recompile.
+#define LED_COUNT_MIN 1
+#define LED_COUNT_MAX 60
+
+void setLedCount(uint16_t count) {
+  if (count < LED_COUNT_MIN) count = LED_COUNT_MIN;
+  if (count > LED_COUNT_MAX) count = LED_COUNT_MAX;
+  if (count == strip.numPixels()) return;
+  strip.updateLength(count);
+  strip.clear();
+  strip.show();
+}
+
+#define LED_TEST_STEP_MS 1500
+#define LED_TEST_MAX_COLORS 7
+
+struct LedTestState {
+  bool active = false;
+  uint8_t colors[LED_TEST_MAX_COLORS][3];
+  int stepCount = 0;
+  int currentStep = 0;
+  unsigned long stepStartMs = 0;
+};
+static LedTestState ledTest;
+
+void startLedTest(const uint8_t colors[][3], int count) {
+  ledTest.stepCount = (count > LED_TEST_MAX_COLORS) ? LED_TEST_MAX_COLORS : count;
+  for (int i = 0; i < ledTest.stepCount; i++) {
+    memcpy(ledTest.colors[i], colors[i], 3);
+  }
+  ledTest.currentStep = 0;
+  ledTest.stepStartMs = millis();
+  ledTest.active = (ledTest.stepCount > 0);
+}
+
 void initLEDs() {
   strip.begin();
   strip.setBrightness(ledBrightnessDay);
@@ -16,7 +55,7 @@ void initLEDs() {
 }
 
 void setAllLEDs(uint8_t r, uint8_t g, uint8_t b) {
-  for (int i = 0; i < LED_COUNT; i++) {
+  for (uint16_t i = 0; i < strip.numPixels(); i++) {
     strip.setPixelColor(i, strip.Color(r, g, b));
   }
   strip.show();
@@ -30,6 +69,23 @@ void clearLEDs() {
 // why the WHOLE strip changes color together, instead of splitting it
 // per-player or per-pixel.
 void updateLEDs(const ClockState &state) {
+  if (ledTest.active) {
+    unsigned long now = millis();
+    if (now - ledTest.stepStartMs >= LED_TEST_STEP_MS) {
+      ledTest.currentStep++;
+      ledTest.stepStartMs = now;
+      if (ledTest.currentStep >= ledTest.stepCount) {
+        ledTest.active = false;  // done - fall through to normal state-driven logic below
+      }
+    }
+    if (ledTest.active) {
+      strip.setBrightness(isNightTime() ? ledBrightnessNight : ledBrightnessDay);
+      const uint8_t *c = ledTest.colors[ledTest.currentStep];
+      setAllLEDs(c[0], c[1], c[2]);
+      return;
+    }
+  }
+
   strip.setBrightness(isNightTime() ? ledBrightnessNight : ledBrightnessDay);
 
   if (!state.wifiConnected) {

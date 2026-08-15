@@ -239,6 +239,14 @@ void chessConnectSendButtonEvent() {
   static const char *payload = "{\"type\":\"buttonEvent\",\"data\":{\"isRepeat\":false}}";
   eventChar->setValue((uint8_t *)payload, strlen(payload));
   eventChar->notify();
+
+  // This button press IS the "I made my move" action for ChessConnect -
+  // unlike chess.com/Lichess (IvoChess_Clock.ino's activePlayerIndex-diff
+  // path), there's no side-switch or other signal to detect an own move
+  // from afterwards: displayText only ever reports the OPPONENT'S move
+  // (see applyEvent() below), so this is the only reliable place to play
+  // SOUND_MOVE_OWN for this data source.
+  playSoundEvent(SOUND_MOVE_OWN);
 }
 
 void initChessConnectBLE() {

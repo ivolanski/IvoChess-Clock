@@ -64,10 +64,13 @@
 // see project_details/ivochess_clock_2.0_resources/wiring_instructions.md).
 // Melody format: comma-separated "freqHz:durationMs" pairs, freq=0 = rest.
 // These are only the compiled-in DEFAULTS - the admin portal lets each event
-// be overridden with a custom melody string (SoundFunctions.cpp).
+// be overridden with a custom melody string, which may also be pasted in as
+// an RTTTL ringtone (auto-detected - see SoundFunctions.cpp).
 // ---------------------------------------------------------------------------
 #define SPEAKER_PIN D2
-#define SOUND_MELODY_MAX_LEN 200
+// 320 (not 200) so a full-length RTTTL ringtone pasted from the internet -
+// e.g. themes/full songs, not just short jingles - fits without truncation.
+#define SOUND_MELODY_MAX_LEN 320
 
 #define DEFAULT_SOUND_MOVE_OPPONENT "880:60"
 #define DEFAULT_SOUND_MOVE_OWN      "659:60"

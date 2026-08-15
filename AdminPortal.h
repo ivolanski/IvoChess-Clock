@@ -58,6 +58,12 @@ extern uint8_t ledColorOpponentTurn[3];
 extern uint8_t ledBrightnessDay;
 extern uint8_t ledBrightnessNight;
 
+// How many pixels of the strip are actually driven - defaults to config.h's
+// LED_COUNT on first boot, but can be changed from the webadmin (applied
+// live via LedFunctions.h's setLedCount()) so a build with a different
+// physical strip length doesn't need a recompile.
+extern uint16_t ledCount;
+
 // How long (ms) the game-over result stays on screen before returning to
 // the waiting/status screen. Configurable in seconds in the admin portal.
 extern unsigned long resultDisplayDurationMs;

@@ -41,4 +41,11 @@ const char *soundDefaultMelody(SoundEvent evt);
 // enqueues, never touches shared state directly.
 void playSoundEvent(SoundEvent evt);
 
+// Admin portal "Test" button - plays 'melody' immediately regardless of
+// soundEnabled[] and without going through soundMelodyOverride[]/the
+// compiled-in default, so a not-yet-saved (or currently muted) melody can
+// be previewed exactly as typed. Same non-blocking queue as
+// playSoundEvent() - safe to call from the admin portal's request handler.
+void playMelodyNow(const char *melody);
+
 #endif  // SOUND_FUNCTIONS_H

@@ -24,6 +24,7 @@ static const char *STRINGS_EN[STR_COUNT] = {
   "Session expired",
   "Connection error",
   "Restart for new game",
+  "Waiting for Bluetooth...",
   "Opp",
 };
 
@@ -49,6 +50,7 @@ static const char *STRINGS_PT[STR_COUNT] = {
   "Sessao expirada",
   "Erro de conexao",
   "Reinicie p/ nova partida",
+  "Aguardando Bluetooth...",
   "Adv",
 };
 

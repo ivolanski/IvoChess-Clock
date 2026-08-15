@@ -378,6 +378,13 @@ static const char *statusHeadline(const ClockState &state) {
   // actually stopped.
   if (state.waitingTimedOut) return T(STR_RESTART_FOR_GAME);
   if (state.apiOk) return T(STR_WAITING_FOR_GAME);
+  // ChessConnect has no "real" error state of its own - apiOk just tracks
+  // "not currently paired/connected yet" (GameDataSource.cpp's
+  // updateFromChessConnectBLE()/ChessConnectBLE.cpp's CC_EVENT_DISCONNECTED),
+  // which is completely normal while waiting for the Chessconnect app to
+  // (re)connect over Bluetooth - not a failure. STR_CONNECTION_ERROR would
+  // read as a fault during perfectly ordinary pairing/reconnecting.
+  if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) return T(STR_WAITING_FOR_BLUETOOTH);
   if (strstr(state.apiStatus, "401") || strstr(state.apiStatus, "403")) return T(STR_SESSION_EXPIRED);
   return T(STR_CONNECTION_ERROR);
 }

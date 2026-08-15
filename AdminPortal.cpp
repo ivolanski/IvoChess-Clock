@@ -6,6 +6,7 @@
 #include "LichessApiFunctions.h"
 #include "OAuthPkce.h"
 #include "Favicon.h"
+#include "LedFunctions.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -28,6 +29,7 @@ uint8_t ledColorMyTurn[3];
 uint8_t ledColorOpponentTurn[3];
 uint8_t ledBrightnessDay = DEFAULT_LED_BRIGHTNESS;
 uint8_t ledBrightnessNight = DEFAULT_LED_BRIGHTNESS_NIGHT;
+uint16_t ledCount = LED_COUNT;
 unsigned long resultDisplayDurationMs = DEFAULT_RESULT_DISPLAY_DURATION_SEC * 1000UL;
 
 bool soundEnabled[SOUND_EVENT_COUNT];
@@ -117,6 +119,8 @@ static void loadConfig() {
   hexToRgb(prefs.getString("led_oppturn", DEFAULT_LED_OPPONENT_TURN), ledColorOpponentTurn);
   ledBrightnessDay = (uint8_t)prefs.getUInt("led_bright_day", DEFAULT_LED_BRIGHTNESS);
   ledBrightnessNight = (uint8_t)prefs.getUInt("led_bright_night", DEFAULT_LED_BRIGHTNESS_NIGHT);
+  ledCount = (uint16_t)prefs.getUInt("led_count", LED_COUNT);
+  setLedCount(ledCount);  // applies the saved strip length now that initLEDs() has already run (setup()'s ordering - see IvoChess_Clock.ino)
 
   resultDisplayDurationMs = (unsigned long)prefs.getUInt("result_dur_s", DEFAULT_RESULT_DISPLAY_DURATION_SEC) * 1000UL;
 
@@ -154,6 +158,7 @@ static void saveConfig() {
   prefs.putString("led_oppturn", rgbToHex(ledColorOpponentTurn));
   prefs.putUInt("led_bright_day", ledBrightnessDay);
   prefs.putUInt("led_bright_night", ledBrightnessNight);
+  prefs.putUInt("led_count", ledCount);
 
   prefs.putUInt("result_dur_s", (unsigned int)(resultDisplayDurationMs / 1000UL));
 
@@ -379,6 +384,9 @@ static void handleRoot() {
   html += "</div>";
 
   html += "<h2>LED colors</h2><div class='card'>";
+  html += "<label>Number of LEDs</label><input type='number' name='led_count' min='1' max='60' value='" + String(ledCount) + "'>";
+  html += "<small>Must match how many LEDs are actually wired on the strip - only matters if your build uses a "
+          "different strip length than the default.</small>";
   html += "<div class='colorrow'><label>No WiFi</label><input type='color' name='led_nowifi' value='" + rgbToHex(ledColorNoWifi) + "'></div>";
   html += "<div class='colorrow'><label>Low battery (blinks)</label><input type='color' name='led_lowbatt' value='" + rgbToHex(ledColorLowBattery) + "'></div>";
   html += "<div class='colorrow'><label>Your turn</label><input type='color' name='led_myturn' value='" + rgbToHex(ledColorMyTurn) + "'></div>";
@@ -388,10 +396,18 @@ static void handleRoot() {
   html += "<div class='colorrow'><label>Draw / unknown</label><input type='color' name='led_draw' value='" + rgbToHex(ledColorDraw) + "'></div>";
   html += "<label>Brightness - day (0-255)</label><input type='number' name='led_bright_day' min='0' max='255' value='" + String(ledBrightnessDay) + "'>";
   html += "<label>Brightness - night (0-255)</label><input type='number' name='led_bright_night' min='0' max='255' value='" + String(ledBrightnessNight) + "'>";
+  html += "<button type='submit' formaction='/led/test' formmethod='POST' style='margin-top:10px;padding:10px;"
+          "font-size:0.85rem;font-weight:500'>&#9658; Test LED colors</button>";
+  html += "<small>Cycles the strip through each color above (as currently typed, even if not saved yet), "
+          "about 1.5s each.</small>";
   html += "</div>";
 
   html += "<h2>Sound</h2><div class='card'>";
-  html += "<small>Each event: enable/mute, and an optional custom melody - comma-separated "
+  html += "<small>Each event: enable/mute, and an optional custom melody. Paste in an "
+          "<b>RTTTL</b> ringtone (e.g. <code>Nokia:d=4,o=5,b=125:8e6,8d6,2f#,2g#,8c#6,...</code>) - "
+          "try the <a href='https://rtttl.skully.tech/' target='_blank' rel='noopener'>RTTTL composer</a> "
+          "to make your own, or the <a href='https://ringtone.vulc.in/' target='_blank' rel='noopener'>"
+          "ringtone library</a> for thousands of free ready-made melodies. Or use comma-separated "
           "<code>freqHz:durationMs</code> notes (e.g. <code>523:100,659:100,0:50,784:150</code>, "
           "<code>0</code> = silence/rest). Leave blank to use the built-in default shown as a placeholder.</small>";
   for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
@@ -403,9 +419,14 @@ static void handleRoot() {
     html += "<div style='flex:1'>";
     html += "<label style='margin:0 0 4px'>" + String(meta.label) + "</label>";
     html += "<input type='text' name='snd_mel_" + String(meta.key) + "' value='" + String(soundMelodyOverride[i]) +
-            "' placeholder='" + String(soundDefaultMelody((SoundEvent)i)) + "'>";
+            "' placeholder='" + String(soundDefaultMelody((SoundEvent)i)) + "' maxlength='" +
+            String(SOUND_MELODY_MAX_LEN - 1) + "'>";
+    html += "<div style='display:flex;gap:8px;margin-top:6px'>";
+    html += "<button type='submit' formaction='/sound/test' formmethod='POST' name='sndevt' value='" + String(meta.key) +
+            "' style='padding:8px;font-size:0.8rem;font-weight:500'>&#9658; Test</button>";
     html += "<button type='submit' formaction='/sound/reset' formmethod='POST' name='sndevt' value='" + String(meta.key) +
-            "' style='margin-top:6px;padding:8px;font-size:0.8rem;font-weight:500'>Reset to default</button>";
+            "' style='padding:8px;font-size:0.8rem;font-weight:500'>Reset to default</button>";
+    html += "</div>";
     html += "</div></div>";
   }
   html += "</div>";
@@ -490,6 +511,10 @@ static void handleSave() {
   if (server.hasArg("led_oppturn")) hexToRgb(server.arg("led_oppturn"), ledColorOpponentTurn);
   if (server.hasArg("led_bright_day")) ledBrightnessDay = (uint8_t)constrain(server.arg("led_bright_day").toInt(), 0, 255);
   if (server.hasArg("led_bright_night")) ledBrightnessNight = (uint8_t)constrain(server.arg("led_bright_night").toInt(), 0, 255);
+  if (server.hasArg("led_count")) {
+    ledCount = (uint16_t)constrain(server.arg("led_count").toInt(), 1, 60);
+    setLedCount(ledCount);  // applied immediately - no reboot needed, same as the color/brightness fields above
+  }
 
   // Checkboxes are only present in the POST body when checked - unlike the
   // hasArg()+non-empty guards above (which preserve the current value when
@@ -677,6 +702,58 @@ static void handleSoundReset() {
               "<body></body></html>");
 }
 
+// POST /sound/test - plays one event's melody immediately, using whatever
+// is CURRENTLY TYPED in that event's field on the submitted form (even if
+// not saved yet) so a pasted RTTTL string can be previewed before
+// committing it - falls back to the saved override/default only if the
+// field was left empty. Deliberately doesn't call saveConfig(): this is a
+// preview, not a save.
+static void handleSoundTest() {
+  if (!checkAuth()) return;
+
+  String key = server.arg("sndevt");
+  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+    if (key == SOUND_EVENT_META[i].key) {
+      char melKey[24];
+      snprintf(melKey, sizeof(melKey), "snd_mel_%s", SOUND_EVENT_META[i].key);
+      String typed = server.arg(melKey);
+      const char *toPlay = typed.length() ? typed.c_str()
+                          : (soundMelodyOverride[i][0] != '\0') ? soundMelodyOverride[i]
+                          : soundDefaultMelody((SoundEvent)i);
+      playMelodyNow(toPlay);
+      Serial.printf("[AdminPortal] Testing sound '%s'.\n", SOUND_EVENT_META[i].key);
+      break;
+    }
+  }
+
+  server.send(200, "text/html",
+              "<html><head><meta http-equiv='refresh' content='0;url=/'></head>"
+              "<body></body></html>");
+}
+
+// POST /led/test - cycles the strip through the 7 CURRENTLY TYPED LED
+// colors from the submitted form (even if not saved yet), one at a time -
+// see LedFunctions.h's startLedTest(). Same "preview before you save"
+// reasoning as handleSoundTest() above.
+static void handleLedTest() {
+  if (!checkAuth()) return;
+
+  uint8_t colors[7][3];
+  hexToRgb(server.arg("led_nowifi"), colors[0]);
+  hexToRgb(server.arg("led_lowbatt"), colors[1]);
+  hexToRgb(server.arg("led_myturn"), colors[2]);
+  hexToRgb(server.arg("led_oppturn"), colors[3]);
+  hexToRgb(server.arg("led_won"), colors[4]);
+  hexToRgb(server.arg("led_lost"), colors[5]);
+  hexToRgb(server.arg("led_draw"), colors[6]);
+  startLedTest(colors, 7);
+  Serial.println("[AdminPortal] Testing LED colors.");
+
+  server.send(200, "text/html",
+              "<html><head><meta http-equiv='refresh' content='0;url=/'></head>"
+              "<body></body></html>");
+}
+
 static void handleFavicon() {
   server.send_P(200, PSTR("image/png"), (PGM_P)FAVICON_PNG, FAVICON_PNG_LEN);
 }
@@ -733,6 +810,8 @@ void initAdminPortal(ClockState *statePtr) {
   server.on("/save", HTTP_POST, handleSave);
   server.on("/chesscom/invalidate", HTTP_POST, handleChessComInvalidate);
   server.on("/sound/reset", HTTP_POST, handleSoundReset);
+  server.on("/sound/test", HTTP_POST, handleSoundTest);
+  server.on("/led/test", HTTP_POST, handleLedTest);
   server.on("/favicon.ico", handleFavicon);
   server.on(LICHESS_OAUTH_CALLBACK_PATH, handleLichessOAuthCallback);
   server.on("/oauth/lichess/disconnect", HTTP_POST, handleLichessDisconnect);
