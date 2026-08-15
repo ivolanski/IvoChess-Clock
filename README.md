@@ -1,5 +1,7 @@
 # IvoChess Clock
 
+*The face-to-face feel for your online chess.*
+
 A DIY physical chess clock built on an ESP32-C6 (Seeed XIAO ESP32C6), with a
 2.13" Waveshare e-paper display, a WS2812 LED strip, and battery power. It
 shows your live chess.com or Lichess game — player names/ratings, move
