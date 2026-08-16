@@ -2,6 +2,15 @@
 #define CONFIG_H
 
 // ---------------------------------------------------------------------------
+// FIRMWARE VERSION - shown in the webadmin and compared against GitHub's
+// latest release tag (AdminPortal.cpp's update-check) to flag when a newer
+// build is available. Bump this (and tag/release to match - see
+// N:\documents\AI\claude\CLAUDE.md's release procedure) with every push to
+// master that a user would actually want to know about.
+// ---------------------------------------------------------------------------
+#define FIRMWARE_VERSION "2.0.0"
+
+// ---------------------------------------------------------------------------
 // Default/fallback values - only used BEFORE anything is saved in flash
 // (NVS). Once you fill in the admin page once, whatever is saved there
 // takes over. Leave these blank - the admin page (hotspot or IP) is the

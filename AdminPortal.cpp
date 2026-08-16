@@ -13,6 +13,9 @@
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
 char phpsessid[PHPSESSID_MAX_LEN] = DEFAULT_PHPSESSID;
 char chessComRememberMe[CHESSCOM_REMEMBERME_MAX_LEN] = DEFAULT_CHESSCOM_REMEMBERME;
@@ -35,6 +38,12 @@ unsigned long resultDisplayDurationMs = DEFAULT_RESULT_DISPLAY_DURATION_SEC * 10
 bool soundEnabled[SOUND_EVENT_COUNT];
 char soundMelodyOverride[SOUND_EVENT_COUNT][SOUND_MELODY_MAX_LEN];
 uint8_t soundVolume = DEFAULT_SOUND_VOLUME;
+
+// Set by checkForFirmwareUpdate() (called periodically from loop() - see
+// its own comment), read by pageHead() to show the "Update available"
+// banner. Not persisted - re-checked fresh every boot/interval.
+bool updateAvailable = false;
+char latestVersionTag[24] = "";
 
 // Short NVS-key suffix + webadmin label per event, indexed the same as
 // soundEnabled[]/soundMelodyOverride[] - the one place that ties
@@ -331,7 +340,12 @@ static String pageHead(const char *activeTab) {
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += PAGE_STYLE;
   html += "</head><body>";
-  html += "<h1>IvoChess Clock</h1>";
+  html += "<h1>IvoChess Clock <span style='font-size:0.6rem;font-weight:400;color:var(--muted)'>v" FIRMWARE_VERSION "</span></h1>";
+  if (updateAvailable) {
+    html += "<div class='row'><span class='pill warn'>Update available: " + String(latestVersionTag) +
+            "</span></div><small>Flash the new version from the same page you used to flash this one - "
+            "<a href='https://ivochess.ivolanski.com/build.html' target='_blank' rel='noopener'>ivochess.ivolanski.com/build.html</a></small>";
+  }
   if (apMode) {
     html += "<div class='sub'>Setup hotspot <span class='pill warn'>not on a real network yet</span></div>";
   } else {
@@ -984,4 +998,53 @@ void updateWiFiStatus(ClockState &state) {
 
   String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   ip.toCharArray(state.ipAddress, sizeof(state.ipAddress));
+}
+
+#define UPDATE_CHECK_INTERVAL_MS (24UL * 60UL * 60UL * 1000UL)  // once a day is plenty
+
+void checkForFirmwareUpdate() {
+  static unsigned long lastCheckMs = 0;  // 0 = never checked yet, so the very first loop() after boot checks immediately
+  unsigned long now = millis();
+  if (lastCheckMs != 0 && (now - lastCheckMs) < UPDATE_CHECK_INTERVAL_MS) return;
+  if (apMode || WiFi.status() != WL_CONNECTED) return;  // try again next tick rather than commit lastCheckMs to a check that never happened
+  lastCheckMs = now;
+
+  WiFiClientSecure client;
+  client.setInsecure();  // same "no pinned Root CA yet" tradeoff as the chess.com/Lichess API calls
+  HTTPClient https;
+  if (!https.begin(client, "https://api.github.com/repos/ivolanski/IvoChess-Clock/releases/latest")) {
+    return;
+  }
+  https.addHeader("User-Agent", "IvoChessClock-FirmwareUpdateCheck");  // GitHub's API 403s any request with no User-Agent at all
+  https.setTimeout(10000);
+
+  int httpCode = https.GET();
+  if (httpCode != 200) {
+    Serial.printf("[AdminPortal] Firmware update check failed: HTTP %d\n", httpCode);
+    https.end();
+    return;
+  }
+
+  String payload = https.getString();
+  https.end();
+
+  DynamicJsonDocument doc(2048);  // GitHub's release JSON has a lot of fields we don't need; only tag_name is read below
+  if (deserializeJson(doc, payload) != DeserializationError::Ok) {
+    Serial.println("[AdminPortal] Firmware update check: couldn't parse GitHub's response.");
+    return;
+  }
+
+  const char *tag = doc["tag_name"] | "";
+  if (tag[0] == '\0') return;
+
+  strncpy(latestVersionTag, tag, sizeof(latestVersionTag) - 1);
+  latestVersionTag[sizeof(latestVersionTag) - 1] = '\0';
+
+  // Tags are "vX.Y.Z"; FIRMWARE_VERSION (config.h) is "X.Y.Z" with no
+  // leading 'v' - strip it before comparing so a device actually running
+  // the latest release doesn't show itself a false "update available".
+  const char *latestVersion = (tag[0] == 'v' || tag[0] == 'V') ? tag + 1 : tag;
+  updateAvailable = (strcmp(latestVersion, FIRMWARE_VERSION) != 0);
+  Serial.printf("[AdminPortal] Firmware update check: running %s, latest release %s.%s\n",
+                FIRMWARE_VERSION, latestVersionTag, updateAvailable ? " Update available." : "");
 }

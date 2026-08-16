@@ -169,6 +169,7 @@ void loop() {
   updateWiFiStatus(state);
   updateBatteryInfo(state);
   updateLEDs(state);
+  checkForFirmwareUpdate();  // internally rate-limited to once/day - fine to call every tick
 
   bool gameDataChanged = updateGameData(state);
 

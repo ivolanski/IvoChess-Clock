@@ -85,6 +85,11 @@ extern char soundMelodyOverride[SOUND_EVENT_COUNT][SOUND_MELODY_MAX_LEN];
 // per-event volume, only per-event mute (soundEnabled above).
 extern uint8_t soundVolume;
 
+// Set by checkForFirmwareUpdate() below, read by the webadmin to show an
+// "Update available" banner.
+extern bool updateAvailable;
+extern char latestVersionTag[24];
+
 // Persists the CURRENT phpsessid/chessComRememberMe to Preferences -
 // called by ChessApiFunctions.cpp after a successful session renewal, so
 // the fresh values survive a reboot. Doesn't touch any other setting.
@@ -104,5 +109,15 @@ void handleAdminPortal();
 // Updates state.wifiConnected/wifiStrength/wifiSSID/ipAddress/apMode
 // with the current status. Call periodically from loop().
 void updateWiFiStatus(ClockState &state);
+
+// Checks GitHub's latest release tag against the compiled-in
+// FIRMWARE_VERSION (config.h) and sets updateAvailable/latestVersionTag
+// above. A plain string-inequality check, not numeric "newer than" logic -
+// a device can only ever be running an OLDER version than whatever GitHub
+// currently calls "latest" (nothing runs an unreleased future version), so
+// "different" and "update available" are the same thing here. Safe to call
+// often - internally rate-limited to once a day and skips entirely without
+// WiFi. Call from loop().
+void checkForFirmwareUpdate();
 
 #endif  // ADMIN_PORTAL_H
