@@ -8,7 +8,7 @@
 // N:\documents\AI\claude\CLAUDE.md's release procedure) with every push to
 // master that a user would actually want to know about.
 // ---------------------------------------------------------------------------
-#define FIRMWARE_VERSION "2.0.1"
+#define FIRMWARE_VERSION "2.0.2"
 
 // ---------------------------------------------------------------------------
 // Default/fallback values - only used BEFORE anything is saved in flash
@@ -90,6 +90,21 @@
 // 0% = silent (mute).
 #define SPEAKER_PWM_RESOLUTION_BITS 10
 #define DEFAULT_SOUND_VOLUME 100
+
+// The 1-100 volume slider (0 is a separate hard-mute case, see
+// speakerTone() in SoundFunctions.cpp) is mapped onto a dB range instead
+// of linearly onto PWM duty - human hearing perceives loudness roughly
+// logarithmically, so a straight linear duty ramp makes every low
+// setting sound disproportionately loud relative to its neighbor (e.g.
+// 2% sounding about twice as loud as 1%), while the top of the slider
+// barely changes anything. Spreading a fixed dB range evenly across all
+// 100 steps instead makes every adjacent 1% step the same *ratio*
+// louder than the last, all the way from 1% to 100% - what a real
+// "audio taper" volume knob does. 100% always stays 0dB (today's
+// unchanged max loudness); this only sets how quiet 1% is relative to
+// that. More negative = quieter low end. Tune this if the curve doesn't
+// feel right on real hardware.
+#define SOUND_VOLUME_MIN_DB -40.0f
 
 #define DEFAULT_SOUND_MOVE_OPPONENT "880:60"
 #define DEFAULT_SOUND_MOVE_OWN      "659:60"

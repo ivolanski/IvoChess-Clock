@@ -21,6 +21,14 @@ static QueueHandle_t soundQueue = nullptr;
 // 0-100, persisted) by scaling the PWM duty cycle instead of always using
 // ledcWriteTone()'s fixed 50% - see config.h's SPEAKER_PWM_RESOLUTION_BITS
 // comment for why this is how volume/mute work on this bare-piezo hardware.
+// 1-100 is spread evenly across SOUND_VOLUME_MIN_DB..0dB (config.h)
+// rather than mapped straight onto duty, so every adjacent 1% step is
+// the same ratio louder than the last all the way up the slider - a
+// linear duty ramp instead makes every low setting (e.g. 2% vs 1%)
+// sound disproportionately louder than its neighbor, because forcing a
+// smooth curve to touch exactly zero at 0% unavoidably makes it behave
+// near-linearly right at the bottom, whatever curve shape is used. 0%
+// is therefore its own hard-mute case, not part of the dB curve.
 static void speakerTone(uint32_t freq) {
   if (freq == 0) {
     ledcWrite(SPEAKER_PIN, 0);
@@ -29,7 +37,15 @@ static void speakerTone(uint32_t freq) {
   ledcChangeFrequency(SPEAKER_PIN, freq, SPEAKER_PWM_RESOLUTION_BITS);
   uint32_t maxDuty = (1u << SPEAKER_PWM_RESOLUTION_BITS) - 1;
   uint32_t volume = soundVolume > 100 ? 100 : soundVolume;
-  uint32_t duty = (maxDuty / 2) * volume / 100;  // 100% volume = the old fixed 50% duty (max loudness)
+  uint32_t duty;
+  if (volume == 0) {
+    duty = 0;
+  } else {
+    float volumeFraction = volume / 100.0f;
+    float dB = SOUND_VOLUME_MIN_DB * (1.0f - volumeFraction);  // 100% -> 0dB, 1% -> nearly SOUND_VOLUME_MIN_DB
+    float gain = powf(10.0f, dB / 20.0f);
+    duty = (uint32_t)((maxDuty / 2) * gain + 0.5f);  // 100% volume = the old fixed 50% duty (max loudness)
+  }
   ledcWrite(SPEAKER_PIN, duty);
 }
 
