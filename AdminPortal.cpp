@@ -209,6 +209,8 @@ static const char PAGE_STYLE[] =
     ".colorrow label{margin:0;flex:1;}"
     ".colorrow input[type=color]{width:56px;height:36px;flex:none;}"
     "small{color:var(--muted);}"
+    "a{color:var(--accent);}"
+    "a:visited{color:var(--accent);}"
     "button,input[type=submit]{width:100%;padding:12px;border-radius:10px;border:none;background:var(--accent);color:var(--accent-text);font-size:1rem;font-weight:600;margin-top:18px;cursor:pointer;}"
     "button:active,input[type=submit]:active{opacity:.85;}"
     ".pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600;}"
