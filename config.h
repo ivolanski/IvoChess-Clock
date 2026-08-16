@@ -72,6 +72,16 @@
 // e.g. themes/full songs, not just short jingles - fits without truncation.
 #define SOUND_MELODY_MAX_LEN 320
 
+// LEDC resolution used for the speaker channel (both initSoundTask()'s
+// ledcAttach() and SoundFunctions.cpp's volume-scaled duty writes must
+// agree on this). Volume is implemented as PWM duty cycle: a square wave's
+// loudness on a bare piezo is roughly proportional to its duty cycle, so
+// 100% volume = the old fixed 50% duty (max loudness this hardware can put
+// out - there's no amplifier to go louder than that), scaling down toward
+// 0% = silent (mute).
+#define SPEAKER_PWM_RESOLUTION_BITS 10
+#define DEFAULT_SOUND_VOLUME 100
+
 #define DEFAULT_SOUND_MOVE_OPPONENT "880:60"
 #define DEFAULT_SOUND_MOVE_OWN      "659:60"
 #define DEFAULT_SOUND_GAME_START    "523:100,659:100,784:100,1047:150"

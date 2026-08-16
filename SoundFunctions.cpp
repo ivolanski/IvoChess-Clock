@@ -17,6 +17,22 @@
 
 static QueueHandle_t soundQueue = nullptr;
 
+// Plays 'freq' (0 = silence) at the current soundVolume (AdminPortal.cpp,
+// 0-100, persisted) by scaling the PWM duty cycle instead of always using
+// ledcWriteTone()'s fixed 50% - see config.h's SPEAKER_PWM_RESOLUTION_BITS
+// comment for why this is how volume/mute work on this bare-piezo hardware.
+static void speakerTone(uint32_t freq) {
+  if (freq == 0) {
+    ledcWrite(SPEAKER_PIN, 0);
+    return;
+  }
+  ledcChangeFrequency(SPEAKER_PIN, freq, SPEAKER_PWM_RESOLUTION_BITS);
+  uint32_t maxDuty = (1u << SPEAKER_PWM_RESOLUTION_BITS) - 1;
+  uint32_t volume = soundVolume > 100 ? 100 : soundVolume;
+  uint32_t duty = (maxDuty / 2) * volume / 100;  // 100% volume = the old fixed 50% duty (max loudness)
+  ledcWrite(SPEAKER_PIN, duty);
+}
+
 const char *soundDefaultMelody(SoundEvent evt) {
   switch (evt) {
     case SOUND_GAME_START:    return DEFAULT_SOUND_GAME_START;
@@ -65,7 +81,7 @@ static bool isRtttl(const char *melody) {
 static void playRtttlBlocking(char *rtttl) {
   char *defaults = strchr(rtttl, ':');
   if (!defaults) {
-    ledcWriteTone(SPEAKER_PIN, 0);
+    speakerTone(0);
     return;
   }
   defaults++;  // past the name
@@ -126,14 +142,14 @@ static void playRtttlBlocking(char *rtttl) {
     if (dotted) ms *= 1.5;
 
     uint32_t freq = isPause ? 0 : noteFrequency(letter, sharp, octave);
-    ledcWriteTone(SPEAKER_PIN, (freq > 0 && ms > 0) ? freq : 0);
+    speakerTone((freq > 0 && ms > 0) ? freq : 0);
     if (ms > 0) {
       vTaskDelay(pdMS_TO_TICKS((uint32_t)ms));
     }
 
     note = strtok_r(nullptr, ",", &saveptr2);
   }
-  ledcWriteTone(SPEAKER_PIN, 0);
+  speakerTone(0);
 }
 
 // Plays one "freqHz:durationMs,freqHz:durationMs,..." melody string,
@@ -147,16 +163,16 @@ static void playLegacyMelodyBlocking(char *melody) {
     long freq = atol(note);
     long dur = colon ? atol(colon + 1) : 0;
     if (freq > 0 && dur > 0) {
-      ledcWriteTone(SPEAKER_PIN, (uint32_t)freq);
+      speakerTone((uint32_t)freq);
     } else {
-      ledcWriteTone(SPEAKER_PIN, 0);
+      speakerTone(0);
     }
     if (dur > 0) {
       vTaskDelay(pdMS_TO_TICKS(dur));
     }
     note = strtok_r(nullptr, ",", &saveptr);
   }
-  ledcWriteTone(SPEAKER_PIN, 0);  // silence between/after melodies
+  speakerTone(0);  // silence between/after melodies
 }
 
 // Dispatches to the RTTTL or legacy parser depending on the melody string's
@@ -180,8 +196,8 @@ static void soundTask(void *param) {
 }
 
 void initSoundTask() {
-  ledcAttach(SPEAKER_PIN, 2000, 10);  // 2kHz initial (overwritten per-note), 10-bit resolution
-  ledcWriteTone(SPEAKER_PIN, 0);      // silent until the first real event
+  ledcAttach(SPEAKER_PIN, 2000, SPEAKER_PWM_RESOLUTION_BITS);  // 2kHz initial (overwritten per-note)
+  speakerTone(0);  // silent until the first real event
 
   soundQueue = xQueueCreate(SOUND_QUEUE_LEN, SOUND_MELODY_MAX_LEN);
   xTaskCreate(soundTask, "sound", 3072, nullptr, 1, nullptr);

@@ -34,6 +34,7 @@ unsigned long resultDisplayDurationMs = DEFAULT_RESULT_DISPLAY_DURATION_SEC * 10
 
 bool soundEnabled[SOUND_EVENT_COUNT];
 char soundMelodyOverride[SOUND_EVENT_COUNT][SOUND_MELODY_MAX_LEN];
+uint8_t soundVolume = DEFAULT_SOUND_VOLUME;
 
 // Short NVS-key suffix + webadmin label per event, indexed the same as
 // soundEnabled[]/soundMelodyOverride[] - the one place that ties
@@ -124,6 +125,8 @@ static void loadConfig() {
 
   resultDisplayDurationMs = (unsigned long)prefs.getUInt("result_dur_s", DEFAULT_RESULT_DISPLAY_DURATION_SEC) * 1000UL;
 
+  soundVolume = (uint8_t)prefs.getUInt("snd_volume", DEFAULT_SOUND_VOLUME);
+
   for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
     char enKey[16], melKey[16];
     snprintf(enKey, sizeof(enKey), "snd_en_%s", SOUND_EVENT_META[i].key);
@@ -161,6 +164,8 @@ static void saveConfig() {
   prefs.putUInt("led_count", ledCount);
 
   prefs.putUInt("result_dur_s", (unsigned int)(resultDisplayDurationMs / 1000UL));
+
+  prefs.putUInt("snd_volume", soundVolume);
 
   for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
     char enKey[16], melKey[16];
@@ -204,6 +209,7 @@ static const char PAGE_STYLE[] =
     ".row .v{color:var(--muted);}"
     "label{display:block;font-size:0.85rem;color:var(--muted);margin:10px 0 4px;}"
     "input[type=text],input[type=password],input[type=number],select{width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:0.95rem;}"
+    "input[type=range]{width:100%;}"
     "input[type=color]{width:100%;height:40px;padding:2px;border-radius:8px;border:1px solid var(--border);background:var(--bg);}"
     ".colorrow{display:flex;align-items:center;gap:10px;margin:10px 0;}"
     ".colorrow label{margin:0;flex:1;}"
@@ -217,7 +223,53 @@ static const char PAGE_STYLE[] =
     ".pill.ok{background:rgba(22,163,74,.15);color:var(--ok);}"
     ".pill.warn{background:rgba(217,119,6,.15);color:var(--warn);}"
     ".pill.bad{background:rgba(220,38,38,.15);color:var(--bad);}"
+    ".tabs{display:flex;border-bottom:1px solid var(--border);margin-bottom:18px;}"
+    ".tabs a{flex:1;text-align:center;padding:10px 2px;font-size:0.8rem;font-weight:600;color:var(--muted);"
+    "text-decoration:none;border-bottom:2px solid transparent;margin-bottom:-1px;}"
+    ".tabs a.active{color:var(--accent);border-bottom-color:var(--accent);}"
     "</style>";
+
+// Test/Reset buttons for Sound and LED colors used to be formaction='...'
+// submit buttons - simplest to write, but every click submitted (and thus
+// reloaded) the WHOLE settings form, discarding any other field the user
+// had typed but not yet saved (BUG FOUND VIA USER REPORT: type a new
+// melody, click Test on a DIFFERENT event, the melody you were about to
+// save is gone - the reload re-rendered the page from the last SAVED
+// state). These fetch() calls hit the same /sound/test, /sound/reset,
+// /led/test routes but never navigate the page at all, so nothing typed
+// anywhere else on the form is ever at risk. resetSound() clears the
+// now-blank field locally too, without a round trip, since the server
+// already knows to fall back to the default once the override is cleared.
+static const char PAGE_SCRIPT[] =
+    "<script>"
+    "function postForm(url,params){"
+    "var pairs=[];"
+    "for(var k in params){pairs.push(encodeURIComponent(k)+'='+encodeURIComponent(params[k]));}"
+    "return fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:pairs.join('&')});"
+    "}"
+    "function testSound(key){"
+    "var mel=document.getElementById('mel_'+key).value;"
+    "var params={sndevt:key};"
+    "params['snd_mel_'+key]=mel;"
+    "postForm('/sound/test',params);"
+    "}"
+    "function resetSound(key){"
+    "postForm('/sound/reset',{sndevt:key}).then(function(){"
+    "document.getElementById('mel_'+key).value='';"
+    "});"
+    "}"
+    "function testLeds(){"
+    "postForm('/led/test',{"
+    "led_nowifi:document.getElementById('led_nowifi').value,"
+    "led_lowbatt:document.getElementById('led_lowbatt').value,"
+    "led_myturn:document.getElementById('led_myturn').value,"
+    "led_oppturn:document.getElementById('led_oppturn').value,"
+    "led_won:document.getElementById('led_won').value,"
+    "led_lost:document.getElementById('led_lost').value,"
+    "led_draw:document.getElementById('led_draw').value"
+    "});"
+    "}"
+    "</script>";
 
 // HTTP Basic Auth, checked on every admin route - guards WiFi
 // credentials/session cookies from anyone who can just reach the
@@ -243,28 +295,100 @@ static String lichessRedirectUri() {
   return "http://" + server.hostHeader() + LICHESS_OAUTH_CALLBACK_PATH;
 }
 
-static void handleRoot() {
-  if (!checkAuth()) return;
+// The webadmin used to be one single giant page/form - split into 4 tabs
+// (main/connections/sounds/leds, each its own route and its own <form
+// action='/save'>) once it got unwieldy on a phone. handleSave() stays a
+// SINGLE shared handler for all of them (its per-field hasArg() guards
+// already tolerate a POST body that only contains one tab's fields - see
+// its own comments), it just needs to know which tab's page to redirect
+// back to afterward, which is what the hidden 'tab' field (added by
+// pageFoot() below) is for.
+static String tabNav(const char *active) {
+  String a = active;
+  String html = "<div class='tabs'>";
+  html += "<a href='/' class='" + String(a == "main" ? "active" : "") + "'>Main</a>";
+  html += "<a href='/connections' class='" + String(a == "connections" ? "active" : "") + "'>Connections</a>";
+  html += "<a href='/sounds' class='" + String(a == "sounds" ? "active" : "") + "'>Sounds</a>";
+  html += "<a href='/leds' class='" + String(a == "leds" ? "active" : "") + "'>LEDs</a>";
+  html += "</div>";
+  return html;
+}
 
+static String tabPath(const String &tab) {
+  if (tab == "connections") return "/connections";
+  if (tab == "sounds") return "/sounds";
+  if (tab == "leds") return "/leds";
+  return "/";
+}
+
+// Head + status line + tab bar shared by all 4 tab pages. Callers still
+// open their own <form method='POST' action='/save'> right after this -
+// not folded in here since the LOGIN button needs to sit outside any
+// <form> that includes it as a formaction target (see pageFoot()'s hidden
+// 'tab' field comment for the matching close-out half).
+static String pageHead(const char *activeTab) {
   String html = "<html><head><title>IvoChess Clock</title>";
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += PAGE_STYLE;
   html += "</head><body>";
   html += "<h1>IvoChess Clock</h1>";
-
   if (apMode) {
     html += "<div class='sub'>Setup hotspot <span class='pill warn'>not on a real network yet</span></div>";
   } else {
     html += "<div class='sub'>" + String(wifiSSID) + " &middot; " + String(wifiQualityLabel(true, WiFi.RSSI())) +
             " &middot; " + WiFi.localIP().toString() + " &middot; http://" + MDNS_HOSTNAME + ".local/</div>";
   }
+  html += tabNav(activeTab);
+  return html;
+}
 
+// Closes out the <form> opened by each tab page: a hidden field recording
+// which tab this is (so handleSave() redirects back to the right one,
+// instead of always bouncing to Main), the Save button, the test-button
+// JS, and the closing tags.
+static String pageFoot(const char *activeTab) {
+  String html = "<input type='hidden' name='tab' value='" + String(activeTab) + "'>";
+  html += "<input type='submit' value='Save'>";
+  html += "</form>";
+  html += PAGE_SCRIPT;
+  html += "</body></html>";
+  return html;
+}
+
+static void handleRoot() {
+  if (!checkAuth()) return;
+
+  String html = pageHead("main");
   html += "<form method='POST' action='/save'>";
 
   html += "<h2>WiFi</h2><div class='card'>";
   html += "<label>Network name (SSID)</label><input type='text' name='ssid' value='" + String(wifiSSID) + "'>";
   html += "<label>Password</label><input type='password' name='pass' placeholder='(leave empty to keep current)'>";
   html += "</div>";
+
+  html += "<h2>Display</h2><div class='card'>";
+  html += "<label>Language</label><select name='lang'>";
+  html += "<option value='0'"; html += (currentLanguage == LANG_EN ? " selected" : ""); html += ">English</option>";
+  html += "<option value='1'"; html += (currentLanguage == LANG_PT ? " selected" : ""); html += ">Portugues</option>";
+  html += "</select>";
+  html += "<label>Result screen duration (seconds)</label><input type='number' name='resultdur' min='3' max='120' value='" +
+          String(resultDisplayDurationMs / 1000UL) + "'>";
+  html += "</div>";
+
+  html += "<h2>Webadmin access</h2><div class='card'>";
+  html += "<label>Username</label><input type='text' name='adminuser' value='" + String(webAdminUser) + "' autocomplete='off'>";
+  html += "<label>Password</label><input type='password' name='adminpass' placeholder='(leave empty to keep current)' autocomplete='new-password'>";
+  html += "</div>";
+
+  html += pageFoot("main");
+  server.send(200, "text/html", html);
+}
+
+static void handleConnections() {
+  if (!checkAuth()) return;
+
+  String html = pageHead("connections");
+  html += "<form method='POST' action='/save'>";
 
   html += "<h2>Chess.com account</h2><div class='card'>";
   // Tested live on every page load (a real request, not a cached guess) -
@@ -320,31 +444,28 @@ static void handleRoot() {
   if (lichessToken[0] != '\0') {
     html += "<div class='row'>Connected as <span class='v'>" + String(lichessUsername) + "</span></div>";
     // formaction/formmethod (HTML5), NOT a nested <form> - this whole
-    // block sits inside the page's one big settings <form action='/save'>
-    // (opened above, closed at the bottom). A <form> cannot legally
-    // nest inside another one; the previous version had exactly that,
-    // and browsers respond to it by silently closing the OUTER form
-    // right here - which pushed everything after this card (Display,
-    // LED colors, Data source, Webadmin access, and the real Save
-    // button) outside any <form> at all, so none of it could ever be
-    // submitted. formaction/formmethod is the standards-correct way for
-    // one button in a shared form to submit to a different endpoint.
+    // block sits inside this tab's one <form action='/save'> (opened
+    // above, closed by pageFoot() below). A <form> cannot legally nest
+    // inside another one; an earlier version had exactly that, and
+    // browsers respond to it by silently closing the OUTER form right
+    // here, orphaning everything after it. formaction/formmethod is the
+    // standards-correct way for one button in a shared form to submit to
+    // a different endpoint.
     html += "<button type='submit' formaction='/oauth/lichess/disconnect' formmethod='POST' style='margin-top:10px'>Disconnect</button>";
   } else {
     // Reuse an already-pending PKCE pair instead of generating a new one
     // on every render. Regenerating unconditionally broke the flow in
     // practice: browsers auto-request /favicon.ico right after loading
-    // any page, that request falls through onNotFound() to THIS SAME
-    // handleRoot() (checkAuth() passes - same-origin, cached Basic Auth),
-    // and used to silently overwrite the pending exchange with a second
-    // PKCE pair moments after the real page (and the "Connect" link the
-    // user actually sees and clicks) had already been sent with the
-    // first one - guaranteeing a state mismatch on the callback. Only
-    // generating a fresh pair when none is pending makes the link stay
-    // valid across any number of incidental extra page loads (favicon,
-    // a second tab, a reload) until it's actually used (success or
-    // failure both clear havePendingLichessPkce - see
-    // handleLichessOAuthCallback()).
+    // any page, that request falls through onNotFound() to handleRoot()
+    // (checkAuth() passes - same-origin, cached Basic Auth), and used to
+    // silently overwrite the pending exchange with a second PKCE pair
+    // moments after the real page (and the "Connect" link the user
+    // actually sees and clicks) had already been sent with the first one
+    // - guaranteeing a state mismatch on the callback. Only generating a
+    // fresh pair when none is pending makes the link stay valid across
+    // any number of incidental extra page loads (favicon, a second tab,
+    // a reload) until it's actually used (success or failure both clear
+    // havePendingLichessPkce - see handleLichessOAuthCallback()).
     if (!havePendingLichessPkce) {
       pkceGenerate(pendingLichessPkce);
       havePendingLichessPkce = true;
@@ -355,15 +476,6 @@ static void handleRoot() {
             "text-decoration:none;margin-top:18px'>Connect to Lichess</a>";
     html += "<small>Opens Lichess's own login/consent page - the clock never sees your Lichess password.</small>";
   }
-  html += "</div>";
-
-  html += "<h2>Display</h2><div class='card'>";
-  html += "<label>Language</label><select name='lang'>";
-  html += "<option value='0'"; html += (currentLanguage == LANG_EN ? " selected" : ""); html += ">English</option>";
-  html += "<option value='1'"; html += (currentLanguage == LANG_PT ? " selected" : ""); html += ">Portugues</option>";
-  html += "</select>";
-  html += "<label>Result screen duration (seconds)</label><input type='number' name='resultdur' min='3' max='120' value='" +
-          String(resultDisplayDurationMs / 1000UL) + "'>";
   html += "</div>";
 
   html += "<h2>Data source</h2><div class='card'>";
@@ -385,24 +497,15 @@ static void handleRoot() {
   html += "</select>";
   html += "</div>";
 
-  html += "<h2>LED colors</h2><div class='card'>";
-  html += "<label>Number of LEDs</label><input type='number' name='led_count' min='1' max='60' value='" + String(ledCount) + "'>";
-  html += "<small>Must match how many LEDs are actually wired on the strip - only matters if your build uses a "
-          "different strip length than the default.</small>";
-  html += "<div class='colorrow'><label>No WiFi</label><input type='color' name='led_nowifi' value='" + rgbToHex(ledColorNoWifi) + "'></div>";
-  html += "<div class='colorrow'><label>Low battery (blinks)</label><input type='color' name='led_lowbatt' value='" + rgbToHex(ledColorLowBattery) + "'></div>";
-  html += "<div class='colorrow'><label>Your turn</label><input type='color' name='led_myturn' value='" + rgbToHex(ledColorMyTurn) + "'></div>";
-  html += "<div class='colorrow'><label>Opponent's turn</label><input type='color' name='led_oppturn' value='" + rgbToHex(ledColorOpponentTurn) + "'></div>";
-  html += "<div class='colorrow'><label>You won</label><input type='color' name='led_won' value='" + rgbToHex(ledColorWon) + "'></div>";
-  html += "<div class='colorrow'><label>You lost</label><input type='color' name='led_lost' value='" + rgbToHex(ledColorLost) + "'></div>";
-  html += "<div class='colorrow'><label>Draw / unknown</label><input type='color' name='led_draw' value='" + rgbToHex(ledColorDraw) + "'></div>";
-  html += "<label>Brightness - day (0-255)</label><input type='number' name='led_bright_day' min='0' max='255' value='" + String(ledBrightnessDay) + "'>";
-  html += "<label>Brightness - night (0-255)</label><input type='number' name='led_bright_night' min='0' max='255' value='" + String(ledBrightnessNight) + "'>";
-  html += "<button type='submit' formaction='/led/test' formmethod='POST' style='margin-top:10px;padding:10px;"
-          "font-size:0.85rem;font-weight:500'>&#9658; Test LED colors</button>";
-  html += "<small>Cycles the strip through each color above (as currently typed, even if not saved yet), "
-          "about 1.5s each.</small>";
-  html += "</div>";
+  html += pageFoot("connections");
+  server.send(200, "text/html", html);
+}
+
+static void handleSounds() {
+  if (!checkAuth()) return;
+
+  String html = pageHead("sounds");
+  html += "<form method='POST' action='/save'>";
 
   html += "<h2>Sound</h2><div class='card'>";
   html += "<small>Each event: enable/mute, and an optional custom melody. Paste in an "
@@ -412,6 +515,12 @@ static void handleRoot() {
           "ringtone library</a> for thousands of free ready-made melodies. Or use comma-separated "
           "<code>freqHz:durationMs</code> notes (e.g. <code>523:100,659:100,0:50,784:150</code>, "
           "<code>0</code> = silence/rest). Leave blank to use the built-in default shown as a placeholder.</small>";
+  html += "<label>Volume - <span id='snd_volume_pct'>" + String(soundVolume) +
+          "</span>% (0 = mute - handy if you're somewhere quiet, like a library)</label>";
+  html += "<input type='range' id='snd_volume' name='snd_volume' min='0' max='100' value='" + String(soundVolume) +
+          "' oninput=\"document.getElementById('snd_volume_pct').textContent=this.value\">";
+  html += "<small>This is the loudest a bare piezo speaker driven straight off the ESP32 can go - there's no "
+          "amplifier, so raising it above 100% isn't possible in software.</small>";
   for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
     const SoundEventMeta &meta = SOUND_EVENT_META[i];
     html += "<div class='colorrow' style='align-items:flex-start;margin-top:16px'>";
@@ -420,28 +529,49 @@ static void handleRoot() {
     html += "></label>";
     html += "<div style='flex:1'>";
     html += "<label style='margin:0 0 4px'>" + String(meta.label) + "</label>";
-    html += "<input type='text' name='snd_mel_" + String(meta.key) + "' value='" + String(soundMelodyOverride[i]) +
+    html += "<input type='text' id='mel_" + String(meta.key) + "' name='snd_mel_" + String(meta.key) + "' value='" + String(soundMelodyOverride[i]) +
             "' placeholder='" + String(soundDefaultMelody((SoundEvent)i)) + "' maxlength='" +
             String(SOUND_MELODY_MAX_LEN - 1) + "'>";
     html += "<div style='display:flex;gap:8px;margin-top:6px'>";
-    html += "<button type='submit' formaction='/sound/test' formmethod='POST' name='sndevt' value='" + String(meta.key) +
-            "' style='padding:8px;font-size:0.8rem;font-weight:500'>&#9658; Test</button>";
-    html += "<button type='submit' formaction='/sound/reset' formmethod='POST' name='sndevt' value='" + String(meta.key) +
-            "' style='padding:8px;font-size:0.8rem;font-weight:500'>Reset to default</button>";
+    html += "<button type='button' onclick=\"testSound('" + String(meta.key) +
+            "')\" style='padding:8px;font-size:0.8rem;font-weight:500'>&#9658; Test</button>";
+    html += "<button type='button' onclick=\"resetSound('" + String(meta.key) +
+            "')\" style='padding:8px;font-size:0.8rem;font-weight:500'>Reset to default</button>";
     html += "</div>";
     html += "</div></div>";
   }
   html += "</div>";
 
-  html += "<h2>Webadmin access</h2><div class='card'>";
-  html += "<label>Username</label><input type='text' name='adminuser' value='" + String(webAdminUser) + "' autocomplete='off'>";
-  html += "<label>Password</label><input type='password' name='adminpass' placeholder='(leave empty to keep current)' autocomplete='new-password'>";
+  html += pageFoot("sounds");
+  server.send(200, "text/html", html);
+}
+
+static void handleLeds() {
+  if (!checkAuth()) return;
+
+  String html = pageHead("leds");
+  html += "<form method='POST' action='/save'>";
+
+  html += "<h2>LED colors</h2><div class='card'>";
+  html += "<label>Number of LEDs</label><input type='number' id='led_count' name='led_count' min='1' max='60' value='" + String(ledCount) + "'>";
+  html += "<small>Must match how many LEDs are actually wired on the strip - only matters if your build uses a "
+          "different strip length than the default.</small>";
+  html += "<div class='colorrow'><label>No WiFi</label><input type='color' id='led_nowifi' name='led_nowifi' value='" + rgbToHex(ledColorNoWifi) + "'></div>";
+  html += "<div class='colorrow'><label>Low battery (blinks)</label><input type='color' id='led_lowbatt' name='led_lowbatt' value='" + rgbToHex(ledColorLowBattery) + "'></div>";
+  html += "<div class='colorrow'><label>Your turn</label><input type='color' id='led_myturn' name='led_myturn' value='" + rgbToHex(ledColorMyTurn) + "'></div>";
+  html += "<div class='colorrow'><label>Opponent's turn</label><input type='color' id='led_oppturn' name='led_oppturn' value='" + rgbToHex(ledColorOpponentTurn) + "'></div>";
+  html += "<div class='colorrow'><label>You won</label><input type='color' id='led_won' name='led_won' value='" + rgbToHex(ledColorWon) + "'></div>";
+  html += "<div class='colorrow'><label>You lost</label><input type='color' id='led_lost' name='led_lost' value='" + rgbToHex(ledColorLost) + "'></div>";
+  html += "<div class='colorrow'><label>Draw / unknown</label><input type='color' id='led_draw' name='led_draw' value='" + rgbToHex(ledColorDraw) + "'></div>";
+  html += "<label>Brightness - day (0-255)</label><input type='number' name='led_bright_day' min='0' max='255' value='" + String(ledBrightnessDay) + "'>";
+  html += "<label>Brightness - night (0-255)</label><input type='number' name='led_bright_night' min='0' max='255' value='" + String(ledBrightnessNight) + "'>";
+  html += "<button type='button' onclick='testLeds()' style='margin-top:10px;padding:10px;"
+          "font-size:0.85rem;font-weight:500'>&#9658; Test LED colors</button>";
+  html += "<small>Cycles the strip through each color above (as currently typed, even if not saved yet), "
+          "about 1.5s each.</small>";
   html += "</div>";
 
-  html += "<input type='submit' value='Save'>";
-  html += "</form>";
-  html += "</body></html>";
-
+  html += pageFoot("leds");
   server.send(200, "text/html", html);
 }
 
@@ -503,6 +633,9 @@ static void handleSave() {
     long secs = constrain(server.arg("resultdur").toInt(), 3, 120);
     resultDisplayDurationMs = (unsigned long)secs * 1000UL;
   }
+  if (server.hasArg("snd_volume")) {
+    soundVolume = (uint8_t)constrain(server.arg("snd_volume").toInt(), 0, 100);
+  }
 
   if (server.hasArg("led_nowifi")) hexToRgb(server.arg("led_nowifi"), ledColorNoWifi);
   if (server.hasArg("led_lowbatt")) hexToRgb(server.arg("led_lowbatt"), ledColorLowBattery);
@@ -520,15 +653,22 @@ static void handleSave() {
 
   // Checkboxes are only present in the POST body when checked - unlike the
   // hasArg()+non-empty guards above (which preserve the current value when
-  // a field is left blank), a MISSING snd_en_* here genuinely means the
-  // user unchecked it, so presence alone (not content) is what toggles it.
-  for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
-    char enKey[16], melKey[16];
-    snprintf(enKey, sizeof(enKey), "snd_en_%s", SOUND_EVENT_META[i].key);
-    snprintf(melKey, sizeof(melKey), "snd_mel_%s", SOUND_EVENT_META[i].key);
-    soundEnabled[i] = server.hasArg(enKey);
-    if (server.hasArg(melKey)) {
-      server.arg(melKey).toCharArray(soundMelodyOverride[i], SOUND_MELODY_MAX_LEN);
+  // a field is left blank), a MISSING snd_en_* genuinely means the user
+  // unchecked it, so presence alone (not content) is what toggles it. BUT
+  // that only holds when the Sounds tab's form is what was actually
+  // submitted - every OTHER tab's form has no snd_en_* fields at all
+  // (they're not on that page), and would otherwise read as "every event
+  // just got unchecked" on every save from Main/Connections/LEDs. Gated on
+  // the hidden 'tab' field pageFoot() puts in every form.
+  if (server.arg("tab") == "sounds") {
+    for (int i = 0; i < SOUND_EVENT_COUNT; i++) {
+      char enKey[16], melKey[16];
+      snprintf(enKey, sizeof(enKey), "snd_en_%s", SOUND_EVENT_META[i].key);
+      snprintf(melKey, sizeof(melKey), "snd_mel_%s", SOUND_EVENT_META[i].key);
+      soundEnabled[i] = server.hasArg(enKey);
+      if (server.hasArg(melKey)) {
+        server.arg(melKey).toCharArray(soundMelodyOverride[i], SOUND_MELODY_MAX_LEN);
+      }
     }
   }
 
@@ -554,7 +694,7 @@ static void handleSave() {
     ESP.restart();
   } else {
     server.send(200, "text/html",
-                "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+                "<html><head><meta http-equiv='refresh' content='1;url=" + tabPath(server.arg("tab")) + "'></head>"
                 "<body><h3>Saved.</h3></body></html>");
   }
 }
@@ -617,7 +757,7 @@ static void handleLichessOAuthCallback() {
   Serial.printf("[AdminPortal] Lichess connected as %s.\n", lichessUsername);
 
   server.send(200, "text/html",
-              "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+              "<html><head><meta http-equiv='refresh' content='1;url=/connections'></head>"
               "<body><h3>Connected to Lichess.</h3></body></html>");
 }
 
@@ -646,7 +786,7 @@ static void handleChessComInvalidate() {
   Serial.println("[AdminPortal] Chess.com cookie forgotten locally (no server-side revocation - chess.com has no such endpoint).");
 
   server.send(200, "text/html",
-              "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+              "<html><head><meta http-equiv='refresh' content='1;url=/connections'></head>"
               "<body><h3>Forgotten.</h3></body></html>");
 }
 
@@ -669,7 +809,7 @@ static void handleLichessDisconnect() {
   Serial.println("[AdminPortal] Lichess disconnected (token forgotten locally).");
 
   server.send(200, "text/html",
-              "<html><head><meta http-equiv='refresh' content='1;url=/'></head>"
+              "<html><head><meta http-equiv='refresh' content='1;url=/connections'></head>"
               "<body><h3>Disconnected.</h3></body></html>");
 }
 
@@ -699,9 +839,9 @@ static void handleSoundReset() {
     }
   }
 
-  server.send(200, "text/html",
-              "<html><head><meta http-equiv='refresh' content='0;url=/'></head>"
-              "<body></body></html>");
+  // Only ever called via the Sounds tab's fetch() (see PAGE_SCRIPT) - no
+  // navigation happens, so no meta-refresh needed, just a cheap ack.
+  server.send(200, "text/plain", "OK");
 }
 
 // POST /sound/test - plays one event's melody immediately, using whatever
@@ -728,9 +868,9 @@ static void handleSoundTest() {
     }
   }
 
-  server.send(200, "text/html",
-              "<html><head><meta http-equiv='refresh' content='0;url=/'></head>"
-              "<body></body></html>");
+  // Only ever called via the Sounds tab's fetch() (see PAGE_SCRIPT) - no
+  // navigation happens, so no meta-refresh needed, just a cheap ack.
+  server.send(200, "text/plain", "OK");
 }
 
 // POST /led/test - cycles the strip through the 7 CURRENTLY TYPED LED
@@ -751,9 +891,9 @@ static void handleLedTest() {
   startLedTest(colors, 7);
   Serial.println("[AdminPortal] Testing LED colors.");
 
-  server.send(200, "text/html",
-              "<html><head><meta http-equiv='refresh' content='0;url=/'></head>"
-              "<body></body></html>");
+  // Only ever called via the LEDs tab's fetch() (see PAGE_SCRIPT) - no
+  // navigation happens, so no meta-refresh needed, just a cheap ack.
+  server.send(200, "text/plain", "OK");
 }
 
 static void handleFavicon() {
@@ -809,6 +949,9 @@ void initAdminPortal(ClockState *statePtr) {
   server.collectHeaders(kAuthHeaders, 1);
 
   server.on("/", handleRoot);
+  server.on("/connections", handleConnections);
+  server.on("/sounds", handleSounds);
+  server.on("/leds", handleLeds);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/chesscom/invalidate", HTTP_POST, handleChessComInvalidate);
   server.on("/sound/reset", HTTP_POST, handleSoundReset);

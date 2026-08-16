@@ -80,6 +80,11 @@ extern unsigned long resultDisplayDurationMs;
 extern bool soundEnabled[SOUND_EVENT_COUNT];
 extern char soundMelodyOverride[SOUND_EVENT_COUNT][SOUND_MELODY_MAX_LEN];
 
+// Master volume, 0-100 (0 = mute) - see SoundFunctions.cpp's speakerTone()
+// for how this maps to PWM duty cycle. Applies to every event; there's no
+// per-event volume, only per-event mute (soundEnabled above).
+extern uint8_t soundVolume;
+
 // Persists the CURRENT phpsessid/chessComRememberMe to Preferences -
 // called by ChessApiFunctions.cpp after a successful session renewal, so
 // the fresh values survive a reboot. Doesn't touch any other setting.
