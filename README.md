@@ -44,7 +44,7 @@ directly, since IvoChess Clock will work alongside it either way.
 **Full docs — hardware list, soldering guide, 3D-printed case, firmware
 build/flash instructions, daily use, webadmin, and how to connect
 chess.com, Lichess, or ChessConnect — live on the project site:**
-**[ivochess.ivolanski.com](https://ivochess.ivolanski.com)**
+**[ivochessclock.com](https://ivochessclock.com)**
 
 This project is an independent, community-built effort and is not
 affiliated with or endorsed by Chess.com or Lichess.

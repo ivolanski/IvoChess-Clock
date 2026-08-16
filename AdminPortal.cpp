@@ -344,7 +344,7 @@ static String pageHead(const char *activeTab) {
   if (updateAvailable) {
     html += "<div class='row'><span class='pill warn'>Update available: " + String(latestVersionTag) +
             "</span></div><small>Flash the new version from the same page you used to flash this one - "
-            "<a href='https://ivochess.ivolanski.com/build.html' target='_blank' rel='noopener'>ivochess.ivolanski.com/build.html</a></small>";
+            "<a href='https://ivochessclock.com/build.html' target='_blank' rel='noopener'>ivochessclock.com/build.html</a></small>";
   }
   if (apMode) {
     html += "<div class='sub'>Setup hotspot <span class='pill warn'>not on a real network yet</span></div>";
@@ -436,7 +436,7 @@ static void handleConnections() {
     }
   }
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
-  html += "<small>Step-by-step to get your remember me at: ivochess.ivolanski.com</small>";
+  html += "<small>Step-by-step to get your remember me at: ivochessclock.com</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
   if (phpsessid[0] != '\0' || chessComRememberMe[0] != '\0') {
     // formaction/formmethod (HTML5), not a nested <form> - same reasoning

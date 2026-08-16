@@ -16,10 +16,8 @@
 #include <freertos/task.h>
 #include <freertos/queue.h>
 
-// The site doesn't exist yet (per the user: "e mais tipo uma propaganda
-// mesmo" - it's advertising for a future site), so this is static text
-// everywhere it's used, not a working link.
-#define SITE_URL "ivochess.ivolanski.com"
+// Static text everywhere it's used, not a working link.
+#define SITE_URL "ivochessclock.com"
 
 // static: the display object, and every function that touches it, are
 // now used EXCLUSIVELY from the dedicated display task started by
