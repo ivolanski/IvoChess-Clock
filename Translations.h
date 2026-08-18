@@ -27,7 +27,7 @@ enum StringId {
   STR_WIFI_CONNECTING,
   STR_SESSION_EXPIRED,
   STR_CONNECTION_ERROR,
-  STR_RESTART_FOR_GAME,
+  STR_PRESS_BUTTON_FOR_GAME,
   STR_WAITING_FOR_BLUETOOTH,  // ChessConnect only - not-yet-paired/reconnecting is normal, not an error (see DisplayFunctions.cpp's statusHeadline())
   STR_OPP_MOVE,  // ChessConnect only - bottom-bar label while showing the opponent's last move text (see ChessConnectBLE.cpp)
   STR_COUNT  // always last - marks the size of the tables

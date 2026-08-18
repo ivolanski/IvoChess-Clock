@@ -8,7 +8,7 @@
 // N:\documents\AI\claude\CLAUDE.md's release procedure) with every push to
 // master that a user would actually want to know about.
 // ---------------------------------------------------------------------------
-#define FIRMWARE_VERSION "2.0.3"
+#define FIRMWARE_VERSION "2.0.4"
 
 // ---------------------------------------------------------------------------
 // Default/fallback values - only used BEFORE anything is saved in flash

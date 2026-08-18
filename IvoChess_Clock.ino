@@ -119,6 +119,7 @@ static ClockState state = {
   .lastDisplayUpdate = 0,
   .lastFullRefresh = 0,
   .lastGameActiveAt = 0,
+  .idlePhaseStartedAtMs = 0,
 
   .chessConnectMoveText = "",
   .chessConnectMoveTextUntilMs = 0,
@@ -275,6 +276,18 @@ void loop() {
   }
   wasShowingResult = showingResultNow;
 
+  // A button press clears state.waitingTimedOut instantly (updateButton(),
+  // above - not gated behind this 1s tick), but that alone never used to
+  // trigger a redraw: it doesn't change gameDataChanged, resultWindowChanged,
+  // or the logo/status phase, so the screen could sit showing the stale
+  // "press button" message for up to FULL_REFRESH_INTERVAL_MS (5 minutes)
+  // even though polling had already resumed. Tracked the same way as
+  // lastLogoPhase below, so the very next tick after a press forces a real
+  // redraw.
+  static bool lastWaitingTimedOut = false;
+  bool waitingTimedOutChanged = (state.waitingTimedOut != lastWaitingTimedOut);
+  lastWaitingTimedOut = state.waitingTimedOut;
+
   static bool lastLogoPhase = true;
   bool logoPhaseNow = isLogoPhaseNow(state);
   bool phaseChanged = (logoPhaseNow != lastLogoPhase);
@@ -287,6 +300,7 @@ void loop() {
   // game starts; everything else - rating display aside, ratings do
   // change - already gets redrawn by the partial path).
   bool needsFullRefresh = phaseChanged || gameDataChanged || resultWindowChanged ||
+                          waitingTimedOutChanged ||
                           (now - state.lastFullRefresh) > FULL_REFRESH_INTERVAL_MS;
 
   static unsigned long lastClockRefresh = 0;

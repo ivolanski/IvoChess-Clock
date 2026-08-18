@@ -23,7 +23,7 @@ static const char *STRINGS_EN[STR_COUNT] = {
   "Connecting to WiFi...",
   "Session expired",
   "Connection error",
-  "Restart for new game",
+  "Press the button",
   "Waiting for Bluetooth...",
   "Opp",
 };
@@ -49,7 +49,7 @@ static const char *STRINGS_PT[STR_COUNT] = {
   "Conectando ao WiFi...",
   "Sessao expirada",
   "Erro de conexao",
-  "Reinicie p/ nova partida",
+  "Aperte o botao",
   "Aguardando Bluetooth...",
   "Adv",
 };

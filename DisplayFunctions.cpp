@@ -374,7 +374,7 @@ static const char *statusHeadline(const ClockState &state) {
   // thing worth telling the user - a restart is required, no other
   // status (stale "OK", old error) is still meaningful once polling has
   // actually stopped.
-  if (state.waitingTimedOut) return T(STR_RESTART_FOR_GAME);
+  if (state.waitingTimedOut) return T(STR_PRESS_BUTTON_FOR_GAME);
   if (state.apiOk) return T(STR_WAITING_FOR_GAME);
   // ChessConnect has no "real" error state of its own - apiOk just tracks
   // "not currently paired/connected yet" (GameDataSource.cpp's
@@ -530,7 +530,7 @@ bool isLogoPhaseNow(const ClockState &state) {
   if (millis() < state.resultDisplayUntilMs) return false;
   if (state.lastGameActiveAt != 0 && (millis() - state.lastGameActiveAt) < GAME_RECONNECT_GRACE_MS) return false;
 
-  unsigned long cyclePos = millis() % (SCREEN_CYCLE_INTERVAL_MS * 2);
+  unsigned long cyclePos = (millis() - state.idlePhaseStartedAtMs) % (SCREEN_CYCLE_INTERVAL_MS * 2);
   return cyclePos < SCREEN_CYCLE_INTERVAL_MS;
 }
 

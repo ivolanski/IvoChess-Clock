@@ -282,7 +282,10 @@ static bool updateFromLichessWiFi(ClockState &state) {
 // branching on currentDataSource - only the active source's statics matter
 // at any given moment, so touching the inactive one too is harmless and
 // keeps this a single call site for ButtonFunctions.cpp instead of one per
-// source.
+// source. Only called with no game in progress (see ButtonFunctions.cpp's
+// hasGame gate) - for ChessConnect specifically there's no idle-timeout
+// concept to clear (see updateFromChessConnectBLE() below), so this just
+// resets the anti-burn-in cycle anchor for it, which is still correct.
 void resumeGameSearch(ClockState &state) {
   unsigned long now = millis();
   idleSinceMs = now;
@@ -290,6 +293,26 @@ void resumeGameSearch(ClockState &state) {
   lichessIdleSinceMs = now;
   lichessPollingStoppedUntilRestart = false;
   state.waitingTimedOut = false;
+  // Restart the logo/status alternation fresh from this moment - see
+  // idlePhaseStartedAtMs's comment in ClockState.h - so the display shows
+  // a full cycle of the status screen again instead of the button press
+  // landing mid-way through wherever the logo cycle already was.
+  //
+  // Offset by -SCREEN_CYCLE_INTERVAL_MS, not just "= now": isLogoPhaseNow()
+  // treats cyclePos in [0, SCREEN_CYCLE_INTERVAL_MS) as the LOGO half and
+  // [SCREEN_CYCLE_INTERVAL_MS, 2x) as the STATUS half. Anchoring at "now"
+  // puts cyclePos at ~0 - the logo half - so the button press would show
+  // the logo screen FIRST, backwards from the intent (confirmed live: the
+  // display jumped straight to the logo, then flipped to the status/
+  // waiting screen a full 30s later). Subtracting one interval starts
+  // cyclePos at ~SCREEN_CYCLE_INTERVAL_MS instead, the beginning of the
+  // status half, so the status screen shows immediately and the logo only
+  // takes over after a full SCREEN_CYCLE_INTERVAL_MS, as intended. Safe
+  // even if now < SCREEN_CYCLE_INTERVAL_MS (very early boot): unsigned
+  // wraparound here is harmless because isLogoPhaseNow() only ever reads
+  // the difference (millis() - idlePhaseStartedAtMs) mod 2^32, which stays
+  // mathematically correct regardless of where the subtraction wrapped.
+  state.idlePhaseStartedAtMs = now - SCREEN_CYCLE_INTERVAL_MS;
   Serial.println("[GameDataSource] Button pressed - resuming game search.");
 }
 

@@ -28,8 +28,16 @@ void updateButton(ClockState &state) {
     lastStableState = raw;
     if (lastStableState == LOW) {
       // Debounced press edge - exactly one action per physical press.
-      if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) {
-        chessConnectSendButtonEvent();
+      // Gated on hasGame FIRST, not just currentDataSource: mid-game the
+      // button sends a move (ChessConnect) or does nothing (chess.com/
+      // Lichess), but with no game in progress every source should resume
+      // the game search instead - including ChessConnect, which previously
+      // fired a bogus BLE button/move event even while idle with nothing
+      // paired to a game yet.
+      if (state.hasGame) {
+        if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) {
+          chessConnectSendButtonEvent();
+        }
       } else {
         resumeGameSearch(state);
       }

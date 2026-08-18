@@ -49,11 +49,12 @@ struct ClockState {
 
   // True once the "waiting for game" polling has given up after
   // WAITING_FOR_GAME_TIMEOUT_MS of continuous idle time (see
-  // GameDataSource.cpp) - deliberately requires a physical restart to
-  // clear (it's a static local, not reset anywhere else), not a timer
-  // that quietly resumes on its own. Exists so a clock left on 24/7 with
-  // nobody playing doesn't poll the server forever - see the "screen
-  // stays on WAITING FOR GAME all day" concern this was built for.
+  // GameDataSource.cpp). Cleared by a press of the physical button
+  // (ButtonFunctions.cpp -> resumeGameSearch()), not a timer that quietly
+  // resumes on its own - the point is to force a conscious "yes, I'm about
+  // to play" action. Exists so a clock left on 24/7 with nobody playing
+  // doesn't poll the server forever - see the "screen stays on WAITING FOR
+  // GAME all day" concern this was built for.
   bool waitingTimedOut;
 
   // --- current game ---
@@ -101,6 +102,15 @@ struct ClockState {
   // as genuinely idle, and showing the logo screen during it looked like
   // it had frozen the game). 0 = no game seen yet this boot.
   unsigned long lastGameActiveAt;
+
+  // Anchor for the logo/status anti-burn-in alternation (isLogoPhaseNow(),
+  // DisplayFunctions.cpp): the cycle position is computed relative to this
+  // timestamp rather than raw millis(), so a button press that resumes the
+  // game search (resumeGameSearch(), GameDataSource.cpp) can restart the
+  // cycle fresh - a full SCREEN_CYCLE_INTERVAL_MS of the status screen
+  // before it's next eligible to flip to the logo - instead of picking up
+  // wherever the global cycle already happened to be.
+  unsigned long idlePhaseStartedAtMs;
 
   // ChessConnect only (see ChessConnectBLE.cpp): the opponent's last move
   // text (e.g. "PE7E5"), shown briefly in the bottom bar in place of the
