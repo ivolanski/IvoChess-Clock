@@ -8,7 +8,7 @@
 // N:\documents\AI\claude\CLAUDE.md's release procedure) with every push to
 // master that a user would actually want to know about.
 // ---------------------------------------------------------------------------
-#define FIRMWARE_VERSION "2.0.2"
+#define FIRMWARE_VERSION "2.0.3"
 
 // ---------------------------------------------------------------------------
 // Default/fallback values - only used BEFORE anything is saved in flash
@@ -23,7 +23,7 @@
 
 #define SETUP_AP_NAME "IvoChess-Setup"
 #define WIFI_CONNECT_TIMEOUT_SECONDS 60
-#define MDNS_HOSTNAME "ivochess"  // also reachable at http://ivochess.local/
+#define MDNS_HOSTNAME "ivochessclock"  // also reachable at http://ivochessclock.local/
 
 #define PREFS_NAMESPACE "ivochess"
 #define PREFS_KEY_PHPSESSID "phpsessid"
