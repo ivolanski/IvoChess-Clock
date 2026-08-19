@@ -201,6 +201,17 @@ static const char *wifiQualityLabel(bool connected, int rssi) {
   return T(STR_POOR);
 }
 
+// Same thresholds as wifiQualityLabel(), kept as a separate function rather
+// than folded into it: the label text is translated (T(STR_...)), so the
+// webadmin can't string-match it to pick a pill color without breaking on
+// every non-English language. This mirrors the numeric cutoffs directly.
+static const char *wifiQualityPillClass(bool connected, int rssi) {
+  if (!connected) return "bad";
+  if (rssi > -60) return "ok";
+  if (rssi > -75) return "warn";
+  return "bad";
+}
+
 // Shared page chrome: dark-mode-aware, no external assets (everything
 // inline - this is served straight off the ESP32, no internet access
 // needed to load it, including on the setup hotspot with no WiFi at all).
@@ -212,7 +223,12 @@ static const char PAGE_STYLE[] =
     "body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);margin:0;padding:16px;max-width:480px;margin-left:auto;margin-right:auto;}"
     "h1{font-size:1.3rem;margin:0 0 4px;}"
     "h2{font-size:0.95rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:22px 0 8px;}"
-    ".sub{color:var(--muted);font-size:0.85rem;margin-bottom:18px;}"
+    ".sub{color:var(--muted);font-size:0.85rem;margin:0 0 10px;text-align:right;}"
+    ".headrow{display:flex;justify-content:space-between;align-items:center;gap:10px;}"
+    ".updatebtn{display:inline-block;flex:none;text-decoration:none;padding:3px 9px;border-radius:999px;font-size:0.7rem;font-weight:600;white-space:nowrap;}"
+    ".updatebtn.due{background:rgba(220,38,38,.15);color:var(--bad);}"
+    ".updatebtn.ok{background:rgba(22,163,74,.15);color:var(--ok);cursor:default;}"
+    ".sitefoot{text-align:center;margin-top:24px;font-size:0.8rem;}"
     ".card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;}"
     ".row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.9rem;}"
     ".row .v{color:var(--muted);}"
@@ -340,18 +356,34 @@ static String pageHead(const char *activeTab) {
   html += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
   html += PAGE_STYLE;
   html += "</head><body>";
-  html += "<h1>IvoChess Clock <span style='font-size:0.6rem;font-weight:400;color:var(--muted)'>v" FIRMWARE_VERSION "</span></h1>";
-  if (updateAvailable) {
-    html += "<div class='row'><span class='pill warn'>Update available: " + String(latestVersionTag) +
-            "</span></div><small>Flash the new version from the same page you used to flash this one - "
-            "<a href='https://ivochessclock.com/build.html' target='_blank' rel='noopener'>ivochessclock.com/build.html</a></small>";
-  }
+
+  // Hostname/IP line, right-aligned, ABOVE the title card - SSID and signal
+  // quality used to live here too but moved into the WiFi card itself (see
+  // handleRoot()), since they're WiFi settings, not general page chrome.
   if (apMode) {
-    html += "<div class='sub'>Setup hotspot <span class='pill warn'>not on a real network yet</span></div>";
+    html += "<div class='sub'>Setup hotspot - not on a real network yet</div>";
   } else {
-    html += "<div class='sub'>" + String(wifiSSID) + " &middot; " + String(wifiQualityLabel(true, WiFi.RSSI())) +
-            " &middot; " + WiFi.localIP().toString() + " &middot; http://" + MDNS_HOSTNAME + ".local/</div>";
+    html += "<div class='sub'>http://" + String(MDNS_HOSTNAME) + ".local/ &middot; " + WiFi.localIP().toString() + "</div>";
   }
+
+  html += "<div class='card'><div class='headrow'>";
+  html += "<h1>IvoChess Clock <span style='font-size:0.6rem;font-weight:400;color:var(--muted)'>v" FIRMWARE_VERSION "</span></h1>";
+  // Three states: an update is due (red, links to the flashing page - same
+  // one used to install this very build), confirmed up to date (green,
+  // static - nothing to click), or not yet known (checkForFirmwareUpdate()
+  // hasn't completed a check yet, e.g. fresh boot or no WiFi) - shows
+  // nothing rather than guessing, since latestVersionTag is only ever
+  // populated by a successful check.
+  if (updateAvailable) {
+    // latestVersionTag already carries the GitHub tag's leading "v" (e.g.
+    // "v2.0.5") - see checkForFirmwareUpdate() - so don't prepend another one.
+    html += "<a href='https://ivochessclock.com/build.html' target='_blank' rel='noopener' class='updatebtn due'>Update to " +
+            String(latestVersionTag) + "</a>";
+  } else if (latestVersionTag[0] != '\0') {
+    html += "<span class='updatebtn ok'>Updated</span>";
+  }
+  html += "</div></div>";
+
   html += tabNav(activeTab);
   return html;
 }
@@ -364,6 +396,7 @@ static String pageFoot(const char *activeTab) {
   String html = "<input type='hidden' name='tab' value='" + String(activeTab) + "'>";
   html += "<input type='submit' value='Save'>";
   html += "</form>";
+  html += "<div class='sitefoot'><a href='https://ivochessclock.com' target='_blank' rel='noopener'>ivochessclock.com &#8599;</a></div>";
   html += PAGE_SCRIPT;
   html += "</body></html>";
   return html;
@@ -376,7 +409,20 @@ static void handleRoot() {
   html += "<form method='POST' action='/save'>";
 
   html += "<h2>WiFi</h2><div class='card'>";
-  html += "<label>Network name (SSID)</label><input type='text' name='ssid' value='" + String(wifiSSID) + "'>";
+  // Signal quality pill - moved here from pageHead()'s old status line
+  // (it's WiFi settings, belongs with the rest of the WiFi card) and
+  // color-coded instead of plain muted text - green/yellow/red read at a
+  // glance without needing the word "Signal" next to it. Not shown in AP
+  // mode: WiFi.RSSI() would just be reporting the hotspot's own radio, not
+  // a real connection worth grading.
+  if (!apMode) {
+    html += "<div style='display:flex;justify-content:flex-end'><span class='pill " +
+            String(wifiQualityPillClass(true, WiFi.RSSI())) + "'>" + String(wifiQualityLabel(true, WiFi.RSSI())) + "</span></div>";
+    html += "<label style='margin-top:-4px'>Network name (SSID)</label>";
+  } else {
+    html += "<label>Network name (SSID)</label>";
+  }
+  html += "<input type='text' name='ssid' value='" + String(wifiSSID) + "'>";
   html += "<label>Password</label><input type='password' name='pass' placeholder='(leave empty to keep current)'>";
   html += "</div>";
 
