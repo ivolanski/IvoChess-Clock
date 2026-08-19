@@ -33,10 +33,11 @@ void refreshSessionCookies();
 // the webadmin to show a green/red status on page load - see handleRoot().
 bool testChessComSession();
 
-// Reads back the last time (if any) a chess.com renewal was explicitly
-// refused and CHESSCOM_REMEMBERME discarded because of it - persisted to
-// flash so it survives a reboot, unlike Serial output. Returns false (and
-// leaves both buffers untouched) if no such event has ever been recorded.
+// Reads back the last time (if any) CHESSCOM_REMEMBERME was lost - either
+// found empty on a renewal attempt, or explicitly refused twice and
+// discarded - persisted to flash so it survives a reboot, unlike Serial
+// output. Returns false (and leaves both buffers untouched) if no such
+// event has ever been recorded.
 bool getLastChessComSessionFailure(char *reasonOut, size_t reasonLen, char *whenOut, size_t whenLen);
 
 #endif  // CHESS_API_FUNCTIONS_H

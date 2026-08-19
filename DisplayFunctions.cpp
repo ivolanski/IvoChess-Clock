@@ -365,7 +365,7 @@ static void drawBottomBar(const char *noteLabel, const char *noteValue) {
 // Short, human, ALWAYS-fits-on-one-line status headline for the middle
 // of the waiting screen - deliberately not the raw apiStatus text (which
 // can be a long technical string like "HTTP 403 (session expired -
-// recapture PHPSESSID/CHESSCOM_REMEMBERME)" meant for Serial/debugging,
+// recapture CHESSCOM_REMEMBERME in webadmin)" meant for Serial/debugging,
 // not a small e-paper screen with wrapping disabled - see initDisplay()).
 static const char *statusHeadline(const ClockState &state) {
   if (!state.wifiConnected) return T(STR_WIFI_CONNECTING);

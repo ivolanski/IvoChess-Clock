@@ -138,14 +138,14 @@ static void dedupeSessionCookies() {
 // CRITICAL: this must run after EVERY request, not just after an explicit
 // renewal. chess.com rotates both cookies during ordinary traffic, and
 // whatever it rotates to lives only in the jar (RAM) until this copies it
-// out. Two things break when that copy doesn't happen:
-//   - a power cycle (the on/off switch cuts battery power) reseeds the jar
-//     from flash, i.e. from a value the server retired long ago;
-//   - CHESSCOM_REMEMBERME is single-use. Presenting a token the server has
-//     already rotated past is not read as "expired" but as token theft,
-//     and the standard response is to invalidate EVERY session for the
-//     account - so a stale copy doesn't just fail to renew, it actively
-//     kills the working session we still had.
+// out. If that copy doesn't happen, a power cycle (the on/off switch cuts
+// battery power) reseeds the jar from flash, i.e. from a value the server
+// has since moved past - so it's worth keeping flash current even though
+// presenting an older CHESSCOM_REMEMBERME is not reliably fatal by itself
+// (see the 2026-08-19 note on renewSession()'s discard path below - a
+// live retest that day showed the SAME token successfully re-authenticate
+// twice, hours apart, contradicting the "single-use, replay = account-wide
+// invalidation" assumption this comment used to make here).
 static bool syncJarToGlobalsIfChanged() {
   dedupeSessionCookies();
 
@@ -184,12 +184,21 @@ static bool syncJarToGlobalsIfChanged() {
 // in renewal. A plain page load (tried /home) does: chess.com's
 // authentication middleware notices the session is gone, validates the
 // long-lived remember-me token instead, and responds with a fresh
-// PHPSESSID via Set-Cookie - and rotates CHESSCOM_REMEMBERME itself to a
-// new token in the same response (typical remember-me security pattern:
-// each use invalidates the old token, so re-using a stale captured value
-// a second time correctly fails). No login form, no credentials beyond
-// the one-time capture of this cookie - the same hands-off renewal a
-// browser gets automatically.
+// PHPSESSID via Set-Cookie - and usually also rotates CHESSCOM_REMEMBERME
+// itself to a new token in the same response. No login form, no
+// credentials beyond the one-time capture of this cookie - the same
+// hands-off renewal a browser gets automatically.
+//
+// Whether the OLD token still works after that rotation is genuinely
+// unclear, not "single-use" as earlier versions of this comment assumed.
+// The cookie's own Set-Cookie carries Max-Age=31536000 (1 year), and a
+// live test on 2026-08-19 reused an already-rotated-past token roughly two
+// hours later and it authenticated again cleanly (fresh PHPSESSID, another
+// rotation) - a real replay, not a guess. So don't assume presenting an
+// older copy is instantly fatal; treat "refused" as evidence of that
+// specific attempt, not proof the token is unrecoverably dead (see the
+// two-strikes-before-discard logic below, which exists for exactly this
+// reason).
 //
 // Deliberately NOT gating success on the HTTP status code: this route
 // answered 200 in manual testing but 302 from the device (same account,
@@ -274,7 +283,26 @@ static bool renewSession() {
     // happens if renewSession() bailed out right here. Logging it removes
     // the need to infer that from an absence of other log lines next time.
     Serial.println("[ChessAPI] Renewal skipped - no CHESSCOM_REMEMBERME stored (already empty before this attempt).");
-    return false;  // nothing to renew with - user needs to recapture both cookies
+    // Persist this too, not just the refused-twice case below - otherwise
+    // the webadmin's "Last drop" line stays blank and looks like nothing
+    // ever happened, when in fact the cookie is sitting empty right now.
+    // This exact gap is what made a real 2026-08-19 incident (device
+    // rebooted with CHESSCOM_REMEMBERME already blank, cause unconfirmed -
+    // no code path here had cleared it, so most likely an interrupted
+    // flash write) look untraceable from the webadmin alone.
+    //
+    // Guarded to once per boot: this branch is hit on every poll cycle
+    // (every GAME_POLL_INTERVAL_MS, currently 5s) for as long as the
+    // cookie stays empty, and persistSessionFailure() is a flash write -
+    // writing it every 5s indefinitely would be needless wear, and
+    // ironically raises the odds of causing the exact kind of
+    // interrupted-write corruption suspected here in the first place.
+    static bool alreadyLoggedThisBoot = false;
+    if (!alreadyLoggedThisBoot) {
+      alreadyLoggedThisBoot = true;
+      persistSessionFailure("CHESSCOM_REMEMBERME was empty on renewal attempt");
+    }
+    return false;  // nothing to renew with - user needs to recapture the cookie (webadmin only has the one field - see handleSave())
   }
 
   for (int attempt = 0; attempt < 2; attempt++) {
@@ -289,16 +317,23 @@ static bool renewSession() {
       continue;
     }
 
-    // Bounced to the login page twice in a row = the token really is
-    // dead. Keeping it around is actively harmful: CHESSCOM_REMEMBERME is
-    // single-use, so re-sending one the server has already rotated past
-    // looks like a stolen token rather than an expired one, and the usual
-    // defence is to drop every session for the account - which would keep
-    // killing sessions the user pastes in by hand, exactly the "I pasted
-    // a fresh cookie and it died again a few games later" symptom. Drop
-    // it and say plainly that BOTH cookies have to be recaptured.
-    Serial.println("[ChessAPI] Renewal was refused twice (redirected to login both times) - this CHESSCOM_REMEMBERME is dead.");
-    Serial.println("[ChessAPI] Discarding it so it can't be replayed. Recapture BOTH cookies in the webadmin.");
+    // Bounced to the login page twice in a row. Earlier versions of this
+    // comment asserted CHESSCOM_REMEMBERME is single-use and that
+    // re-presenting an already-rotated one reads as token theft and drops
+    // every session on the account - that was never independently
+    // verified, and a live retest on 2026-08-19 directly contradicts the
+    // "single-use" half of it (the same token re-authenticated cleanly
+    // hours after its first use). What IS verified: the cookie's own
+    // Set-Cookie carries a real 1-year Max-Age, so it's not meant to be
+    // this fragile by design. Two refusals in a row still isn't proof of
+    // WHY - could be a genuinely dead/superseded token (e.g. chess.com
+    // issued a newer one to another session on the account, which would
+    // orphan this copy without ever touching it), could be something else
+    // entirely. Discarding after two strikes is a defensive choice, not a
+    // confirmed diagnosis - keeping a token that fails twice in a row
+    // around forever isn't better, but don't treat "why" as settled.
+    Serial.println("[ChessAPI] Renewal was refused twice (redirected to login both times) - treating this CHESSCOM_REMEMBERME as dead.");
+    Serial.println("[ChessAPI] Discarding it. Recapture the cookie in the webadmin (Connections tab - one field, PHPSESSID is derived automatically).");
     persistSessionFailure("refused during renewal (twice)");
     chessComRememberMe[0] = '\0';
     refreshSessionCookies();
@@ -382,7 +417,7 @@ bool fetchActiveGame(GameInfo &game, char *statusOut, size_t statusOutLen) {
         delay(1500);
         continue;
       }
-      snprintf(statusOut, statusOutLen, "HTTP %d (session expired - recapture PHPSESSID/CHESSCOM_REMEMBERME)", httpCode);
+      snprintf(statusOut, statusOutLen, "HTTP %d (session expired - recapture CHESSCOM_REMEMBERME in webadmin)", httpCode);
       Serial.println("[ChessAPI] 401/403 and renewal via CHESSCOM_REMEMBERME didn't help - both cookies need recapturing in the browser.");
       return false;
     }

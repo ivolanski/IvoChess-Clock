@@ -405,12 +405,28 @@ static void handleConnections() {
   html += "<form method='POST' action='/save'>";
 
   html += "<h2>Chess.com account</h2><div class='card'>";
+  // Surfaces the last time CHESSCOM_REMEMBERME was found empty or actually
+  // REFUSED by chess.com and discarded - persisted to flash
+  // (getLastChessComSessionFailure()), so it's still visible here even
+  // after a reboot wiped the Serial log that would otherwise be the only
+  // record of it. Added after a real "worked all day, dead by morning"
+  // recurrence (2026-08-11) that had no evidence left to diagnose once the
+  // board was next power-cycled; extended 2026-08-19 to also cover the
+  // "found empty on renewal attempt" case (see renewSession() in
+  // ChessApiFunctions.cpp) after a second incident where THAT was the
+  // actual cause and this line had nothing to show for it. Looked up once,
+  // up front, so a bad status can show it inline instead of the reader
+  // having to correlate two separate lines on the page.
+  char failReason[48] = "";
+  char failWhen[24] = "";
+  bool haveFailRecord = getLastChessComSessionFailure(failReason, sizeof(failReason), failWhen, sizeof(failWhen));
   // Tested live on every page load (a real request, not a cached guess) -
   // see testChessComSession(). Only actually run it when there's a WiFi
   // connection to run it over and a cookie worth testing - otherwise the
   // result would just be "No WiFi"/no-cookie noise dressed up as a broken
   // session.
   html += "<div class='row'>Session status ";
+  bool sessionBad = false;
   if (apMode || WiFi.status() != WL_CONNECTED) {
     html += "<span class='pill warn'>No WiFi</span>";
   } else if (phpsessid[0] == '\0' && chessComRememberMe[0] == '\0') {
@@ -419,21 +435,19 @@ static void handleConnections() {
     html += "<span class='pill ok'>Valid</span>";
   } else {
     html += "<span class='pill bad'>Invalid - recapture cookie</span>";
+    sessionBad = true;
+  }
+  if (sessionBad && haveFailRecord) {
+    // Inline with the pill, not a separate buried line - this is exactly
+    // the "why" a reader reaches for the moment they see "Invalid".
+    html += " <small>(" + String(failReason) + " - " + String(failWhen) + ")</small>";
   }
   html += "</div>";
-  {
-    // Surfaces the last time a renewal was actually REFUSED by chess.com
-    // and CHESSCOM_REMEMBERME discarded because of it - persisted to
-    // flash (getLastChessComSessionFailure()), so it's still visible here
-    // even after a reboot wiped the Serial log that would otherwise be
-    // the only record of it. Added after a real "worked all day, dead by
-    // morning" recurrence (2026-08-11) that had no evidence left to
-    // diagnose once the board was next power-cycled.
-    char failReason[48];
-    char failWhen[24];
-    if (getLastChessComSessionFailure(failReason, sizeof(failReason), failWhen, sizeof(failWhen))) {
-      html += "<div class='row'><small>Last drop: " + String(failReason) + " on " + String(failWhen) + "</small></div>";
-    }
+  if (!sessionBad && haveFailRecord) {
+    // Session recovered since the last drop (e.g. auto-renewed, or someone
+    // already recaptured it) - still worth showing when that last drop
+    // was, just not inline with a pill that's no longer bad.
+    html += "<div class='row'><small>Last drop: " + String(failReason) + " on " + String(failWhen) + "</small></div>";
   }
   html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
   html += "<small>Step-by-step to get your remember me at: ivochessclock.com</small>";
@@ -602,20 +616,27 @@ static void handleSave() {
     server.arg("pass").toCharArray(wifiPassword, sizeof(wifiPassword));
     wifiChanged = true;
   }
-  // Only CHESSCOM_REMEMBERME is asked for. PHPSESSID is derived from it
-  // (GET /home with a valid remember-me answers 200 and issues a fresh
-  // PHPSESSID via Set-Cookie - verified against the live server), and the
-  // derivation only works in that direction, so the remember-me is the one
-  // that actually has to come from the user.
+  // Only CHESSCOM_REMEMBERME is asked for - there is no separate PHPSESSID
+  // field in this form (and hasn't been for a while; if you're looking at
+  // old notes/screenshots that mention pasting a PHPSESSID directly, that's
+  // stale). PHPSESSID is derived from CHESSCOM_REMEMBERME instead (GET
+  // /home with a valid remember-me answers 200 and issues a fresh PHPSESSID
+  // via Set-Cookie - verified against the live server), and the derivation
+  // only works in that direction, so the remember-me is the one that
+  // actually has to come from the user.
   //
-  // Having a single field also removes an entire failure mode by
-  // construction: it used to be possible to paste a fresh PHPSESSID while
-  // leaving a stale remember-me in place. That token is single-use, so
-  // replaying one the server has already rotated past reads as a replayed
-  // token rather than an expired one, and the usual response is to
-  // invalidate every session on the account - killing the very cookie that
-  // had just been pasted. With one field that combination cannot be
-  // entered at all.
+  // Having a single field also removes a failure mode by construction: it
+  // used to be possible to paste a fresh PHPSESSID while leaving a stale
+  // remember-me in place, a mismatched pair. Whether presenting an
+  // already-rotated CHESSCOM_REMEMBERME is itself harmful is genuinely
+  // unclear (a live test on 2026-08-19 reused one successfully hours after
+  // its first use - see the "single-use" discussion in
+  // ChessApiFunctions.cpp's renewSessionAttempt()/renewSession()), so treat
+  // that specific rationale as retired. The field stays single anyway: a
+  // stored PHPSESSID that doesn't match the current remember-me is still a
+  // mismatched pair with no upside, and there's nothing a user could
+  // usefully do with a standalone PHPSESSID field that recapturing the
+  // remember-me doesn't already cover.
   bool sessionCookiesChanged = false;
   if (server.hasArg("remembme") && server.arg("remembme").length() > 0) {
     server.arg("remembme").toCharArray(chessComRememberMe, sizeof(chessComRememberMe));
