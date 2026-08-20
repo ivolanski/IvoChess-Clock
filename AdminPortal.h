@@ -45,6 +45,12 @@ extern char myUsername[];
 extern char lichessToken[];
 extern char lichessUsername[];
 
+// UTC offset in seconds, webadmin-configurable (Main tab) - config.h's
+// GMT_OFFSET_SEC is only the factory-default value now. Read by
+// TimeFunctions.cpp's initTime() instead of the macro directly, so a
+// saved change takes effect without needing a firmware rebuild.
+extern int gmtOffsetSec;
+
 // LED colors (see LedFunctions.cpp) - all configurable from the admin
 // portal, defaults come from config.h (DEFAULT_LED_*) the first time the
 // device boots. {R, G, B}, 0-255 each.
@@ -100,6 +106,12 @@ void persistSessionCookies();
 // networks without needing to reset anything - e.g. left the hotel
 // lobby, went to the room, want to switch WiFi). Call once in setup().
 void initAdminPortal(ClockState *statePtr);
+
+// Logs the boot-time SystemLog summary (data source, WiFi SSID, whether
+// remember-me/phpsessid are present). Call once in setup(), AFTER
+// initTime() - see its own comment in AdminPortal.cpp for why it must
+// not be folded into initAdminPortal() itself.
+void logBootState();
 
 // Processes pending web + captive portal DNS requests. Call on every
 // loop() iteration (not behind a long delay()).

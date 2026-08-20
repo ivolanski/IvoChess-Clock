@@ -8,7 +8,7 @@
 // N:\documents\AI\claude\CLAUDE.md's release procedure) with every push to
 // master that a user would actually want to know about.
 // ---------------------------------------------------------------------------
-#define FIRMWARE_VERSION "2.1.1"
+#define FIRMWARE_VERSION "2.1.2"
 
 // ---------------------------------------------------------------------------
 // Default/fallback values - only used BEFORE anything is saved in flash
@@ -279,10 +279,16 @@
 #define ADC_RESOLUTION 4095.0f
 
 // ---------------------------------------------------------------------------
-// TIME (NTP) - only used for the LEDs' night mode
+// TIME (NTP) - used for the LEDs' night mode and the Logs tab's timestamps
 // ---------------------------------------------------------------------------
 #define NTP_SERVER "pool.ntp.org"
-#define GMT_OFFSET_SEC (-3 * 3600)
+// Factory default only - actually applied via AdminPortal.h's gmtOffsetSec,
+// webadmin-configurable on the Main tab (Timezone). Changing this macro
+// only affects a device's very first boot before anyone has saved a
+// different value. UTC, not any particular builder's own timezone - a
+// fresh device out of the box should default to something standard/
+// neutral rather than assuming where it'll end up.
+#define GMT_OFFSET_SEC 0
 #define DAYLIGHT_OFFSET_SEC 0
 #define NIGHT_MODE_START_HOUR 22
 #define NIGHT_MODE_END_HOUR   7

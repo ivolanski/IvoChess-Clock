@@ -139,6 +139,7 @@ void setup() {
 
   initAdminPortal(&state);  // connects to saved WiFi OR starts the hotspot; loads PHPSESSID/language/source
   initTime();
+  logBootState();  // after initTime(), not inside initAdminPortal() - see its own comment for why (timezone not applied yet that early)
   initGameDataSource();
   initChessConnectBLE();
 

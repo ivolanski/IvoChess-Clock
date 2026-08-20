@@ -7,6 +7,7 @@
 #include "OAuthPkce.h"
 #include "Favicon.h"
 #include "LedFunctions.h"
+#include "SystemLog.h"
 
 #include <WiFi.h>
 #include <WebServer.h>
@@ -16,12 +17,14 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <time.h>
 
 char phpsessid[PHPSESSID_MAX_LEN] = DEFAULT_PHPSESSID;
 char chessComRememberMe[CHESSCOM_REMEMBERME_MAX_LEN] = DEFAULT_CHESSCOM_REMEMBERME;
 char myUsername[USERNAME_MAX_LEN] = "";
 char lichessToken[LICHESS_TOKEN_MAX_LEN] = DEFAULT_LICHESS_TOKEN;
 char lichessUsername[USERNAME_MAX_LEN] = "";
+int gmtOffsetSec = GMT_OFFSET_SEC;  // config.h's value is just the factory default now - webadmin-configurable (Main tab), see handleSave()
 
 uint8_t ledColorLowBattery[3];
 uint8_t ledColorWon[3];
@@ -105,6 +108,30 @@ static String rgbToHex(const uint8_t rgb[3]) {
   return String(buf);
 }
 
+// Every half-hour UTC offset from -12:00 to +14:00 (covers every real
+// timezone's standard offset, including the 30-minute ones - India,
+// Newfoundland, etc.) - no named zones/DST table, just the raw offset
+// the user actually wants applied. Values are seconds, matching
+// gmtOffsetSec/configTime()'s own units directly, so no conversion is
+// needed on the handleSave() side.
+static String timezoneSelect() {
+  String html = "<select name='gmt_offset'>";
+  for (int totalMin = -12 * 60; totalMin <= 14 * 60; totalMin += 30) {
+    bool neg = totalMin < 0;
+    int absMin = neg ? -totalMin : totalMin;
+    char label[12];
+    snprintf(label, sizeof(label), "UTC%c%02d:%02d", neg ? '-' : '+', absMin / 60, absMin % 60);
+    int offsetSec = totalMin * 60;
+    html += "<option value='" + String(offsetSec) + "'";
+    if (offsetSec == gmtOffsetSec) html += " selected";
+    html += ">" + String(label) + "</option>";
+  }
+  html += "</select>";
+  return html;
+}
+
+static const char *dataSourceLogName(DataSourceType src);
+
 static void loadConfig() {
   prefs.begin(PREFS_NAMESPACE, /*readOnly=*/true);
   prefs.getString(PREFS_KEY_PHPSESSID, DEFAULT_PHPSESSID).toCharArray(phpsessid, sizeof(phpsessid));
@@ -118,6 +145,7 @@ static void loadConfig() {
   prefs.getString("admin_pass", DEFAULT_WEBADMIN_PASS).toCharArray(webAdminPass, sizeof(webAdminPass));
   currentLanguage = (Language)prefs.getInt("lang", LANG_EN);
   currentDataSource = (DataSourceType)prefs.getInt("datasrc", DATA_SOURCE_CHESSCOM_WIFI);
+  gmtOffsetSec = prefs.getInt("gmt_offset_s", GMT_OFFSET_SEC);
 
   hexToRgb(prefs.getString("led_lowbatt", DEFAULT_LED_LOW_BATTERY), ledColorLowBattery);
   hexToRgb(prefs.getString("led_won", DEFAULT_LED_WON), ledColorWon);
@@ -158,6 +186,7 @@ static void saveConfig() {
   prefs.putString("admin_pass", webAdminPass);
   prefs.putInt("lang", (int)currentLanguage);
   prefs.putInt("datasrc", (int)currentDataSource);
+  prefs.putInt("gmt_offset_s", gmtOffsetSec);
 
   prefs.putString("led_lowbatt", rgbToHex(ledColorLowBattery));
   prefs.putString("led_won", rgbToHex(ledColorWon));
@@ -189,6 +218,14 @@ void persistSessionCookies() {
   prefs.putString(PREFS_KEY_PHPSESSID, phpsessid);
   prefs.putString("remember_me", chessComRememberMe);
   prefs.end();
+
+  // Only stamp on a genuine save, not the empty-string write
+  // handleChessComInvalidate() also routes through here on purpose -
+  // otherwise every "Forget cookie" click would look like a fresh good
+  // write instead of the deliberate clear it actually is.
+  if (chessComRememberMe[0] != '\0') {
+    recordGoodCookieWrite();
+  }
 }
 
 static const char *wifiQualityLabel(bool connected, int rssi) {
@@ -291,6 +328,31 @@ static const char PAGE_SCRIPT[] =
     "led_draw:document.getElementById('led_draw').value"
     "});"
     "}"
+    // Logs tab only (logbox only exists there) - polls the plain-content
+    // route every few seconds and swaps it in wholesale. Simpler and more
+    // robust than diffing/appending on an ESP32: the whole rendered log is
+    // at most 100 short lines, cheap enough to re-fetch and replace outright
+    // rather than tracking a cursor/last-seen-line across polls.
+    "function refreshLogs(){"
+    "fetch('/logs/data').then(function(r){return r.text();}).then(function(html){"
+    "document.getElementById('logbox').innerHTML=html;"
+    "});"
+    "}"
+    // Deprecated execCommand, used deliberately instead of the modern
+    // Clipboard API: navigator.clipboard requires a secure context
+    // (HTTPS/localhost), and the webadmin is plain HTTP on the LAN -
+    // Clipboard API would silently fail to copy anything there.
+    "function copyLogs(){"
+    "var box=document.getElementById('logbox');"
+    "var ta=document.createElement('textarea');"
+    "ta.value=box.innerText;"
+    "ta.style.position='fixed';ta.style.opacity='0';"
+    "document.body.appendChild(ta);"
+    "ta.focus();ta.select();"
+    "try{document.execCommand('copy');}catch(e){}"
+    "document.body.removeChild(ta);"
+    "}"
+    "if(document.getElementById('logbox')){setInterval(refreshLogs,3000);}"
     "</script>";
 
 // HTTP Basic Auth, checked on every admin route - guards WiFi
@@ -332,6 +394,7 @@ static String tabNav(const char *active) {
   html += "<a href='/connections' class='" + String(a == "connections" ? "active" : "") + "'>Connections</a>";
   html += "<a href='/sounds' class='" + String(a == "sounds" ? "active" : "") + "'>Sounds</a>";
   html += "<a href='/leds' class='" + String(a == "leds" ? "active" : "") + "'>LEDs</a>";
+  html += "<a href='/logs' class='" + String(a == "logs" ? "active" : "") + "'>Logs</a>";
   html += "</div>";
   return html;
 }
@@ -441,7 +504,9 @@ static void handleRoot() {
   html += "<option value='0'"; html += (currentLanguage == LANG_EN ? " selected" : ""); html += ">English</option>";
   html += "<option value='1'"; html += (currentLanguage == LANG_PT ? " selected" : ""); html += ">Portugues</option>";
   html += "</select>";
-  html += "<label>Result screen duration (seconds)</label><input type='number' name='resultdur' min='3' max='120' value='" +
+  html += "<label>Timezone</label>" + timezoneSelect();
+  html += "<small>Used for night-mode LED dimming and the Logs tab's timestamps.</small>";
+  html += "<label style='margin-top:14px'>Result screen duration (seconds)</label><input type='number' name='resultdur' min='3' max='120' value='" +
           String(resultDisplayDurationMs / 1000UL) + "'>";
   html += "</div>";
 
@@ -461,51 +526,32 @@ static void handleConnections() {
   html += "<form method='POST' action='/save'>";
 
   html += "<h2>Chess.com account</h2><div class='card'>";
-  // Surfaces the last time CHESSCOM_REMEMBERME was found empty or actually
-  // REFUSED by chess.com and discarded - persisted to flash
-  // (getLastChessComSessionFailure()), so it's still visible here even
-  // after a reboot wiped the Serial log that would otherwise be the only
-  // record of it. Added after a real "worked all day, dead by morning"
-  // recurrence (2026-08-11) that had no evidence left to diagnose once the
-  // board was next power-cycled; extended 2026-08-19 to also cover the
-  // "found empty on renewal attempt" case (see renewSession() in
-  // ChessApiFunctions.cpp) after a second incident where THAT was the
-  // actual cause and this line had nothing to show for it. Looked up once,
-  // up front, so a bad status can show it inline instead of the reader
-  // having to correlate two separate lines on the page.
-  char failReason[48] = "";
-  char failWhen[24] = "";
-  bool haveFailRecord = getLastChessComSessionFailure(failReason, sizeof(failReason), failWhen, sizeof(failWhen));
-  // Tested live on every page load (a real request, not a cached guess) -
-  // see testChessComSession(). Only actually run it when there's a WiFi
-  // connection to run it over and a cookie worth testing - otherwise the
-  // result would just be "No WiFi"/no-cookie noise dressed up as a broken
-  // session.
-  html += "<div class='row'>Session status ";
-  bool sessionBad = false;
-  if (apMode || WiFi.status() != WL_CONNECTED) {
-    html += "<span class='pill warn'>No WiFi</span>";
-  } else if (phpsessid[0] == '\0' && chessComRememberMe[0] == '\0') {
-    html += "<span class='pill warn'>Not connected</span>";
+  // Simple 3-state status, right next to the field it describes - the
+  // fuller forensic detail (why/when it last dropped) used to live here
+  // too as a "Session status"/"Last drop" pair of lines, but that's now
+  // redundant with the Logs tab (see SystemLog.h) and just cluttered the
+  // one thing this card actually needs to answer: is the stored cookie
+  // good right now. Tested live on every page load (a real request, not
+  // a cached guess) - see testChessComSession(); a WiFi/transport issue
+  // reads as "Invalid" here same as an actually-dead cookie, which is a
+  // deliberate simplification (WiFi status has its own indicator
+  // elsewhere on the page).
+  //
+  // Right-aligned own-line pill above the label, same layout as the WiFi
+  // quality pill in handleRoot() (main tab) - label pulled up with
+  // margin-top:-4px so it reads as attached to the pill above it rather
+  // than a separate row.
+  html += "<div style='display:flex;justify-content:flex-end'>";
+  if (chessComRememberMe[0] == '\0') {
+    html += "<span class='pill warn'>Empty</span>";
   } else if (testChessComSession()) {
     html += "<span class='pill ok'>Valid</span>";
   } else {
-    html += "<span class='pill bad'>Invalid - recapture cookie</span>";
-    sessionBad = true;
-  }
-  if (sessionBad && haveFailRecord) {
-    // Inline with the pill, not a separate buried line - this is exactly
-    // the "why" a reader reaches for the moment they see "Invalid".
-    html += " <small>(" + String(failReason) + " - " + String(failWhen) + ")</small>";
+    html += "<span class='pill bad'>Invalid</span>";
   }
   html += "</div>";
-  if (!sessionBad && haveFailRecord) {
-    // Session recovered since the last drop (e.g. auto-renewed, or someone
-    // already recaptured it) - still worth showing when that last drop
-    // was, just not inline with a pill that's no longer bad.
-    html += "<div class='row'><small>Last drop: " + String(failReason) + " on " + String(failWhen) + "</small></div>";
-  }
-  html += "<label>CHESSCOM_REMEMBERME cookie</label><input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
+  html += "<label style='margin-top:-4px'>CHESSCOM_REMEMBERME cookie</label>"
+          "<input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
   html += "<small>Step-by-step to get your remember me at: ivochessclock.com</small>";
   html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
   if (phpsessid[0] != '\0' || chessComRememberMe[0] != '\0') {
@@ -658,6 +704,36 @@ static void handleLeds() {
   server.send(200, "text/html", html);
 }
 
+// Not a settings tab - no <form>/Save button, so it doesn't go through
+// pageFoot() like the other 4 (that would give it a Save button that
+// saves nothing). Own copy of the site-footer/script/closing-tags instead.
+static void handleLogs() {
+  if (!checkAuth()) return;
+
+  String html = pageHead("logs");
+  html += "<h2>System log</h2><div class='card'>";
+  html += "<button type='button' onclick='copyLogs()' style='margin-top:0;padding:10px;"
+          "font-size:0.85rem;font-weight:500'>&#128203; Copy all</button>";
+  html += "<div id='logbox' style='margin-top:12px'>";
+  appendSystemLogHtml(html);
+  html += "</div></div>";
+  html += "<div class='sitefoot'><a href='https://ivochessclock.com' target='_blank' rel='noopener'>ivochessclock.com &#8599;</a></div>";
+  html += PAGE_SCRIPT;
+  html += "</body></html>";
+  server.send(200, "text/html", html);
+}
+
+// GET /logs/data - just the log rows, no page chrome. Polled by
+// refreshLogs() (PAGE_SCRIPT) to keep the Logs tab live without a full
+// page reload; also what a browser open to /logs already got inline on
+// first load, so this route only matters for the periodic refresh.
+static void handleLogsData() {
+  if (!checkAuth()) return;
+  String html;
+  appendSystemLogHtml(html);
+  server.send(200, "text/html", html);
+}
+
 static void handleSave() {
   if (!checkAuth()) return;
 
@@ -716,11 +792,14 @@ static void handleSave() {
   if (server.hasArg("myusername")) {
     server.arg("myusername").toCharArray(myUsername, sizeof(myUsername));
   }
+  bool adminCredsChanged = false;
   if (server.hasArg("adminuser") && server.arg("adminuser").length() > 0) {
     server.arg("adminuser").toCharArray(webAdminUser, sizeof(webAdminUser));
+    adminCredsChanged = true;
   }
   if (server.hasArg("adminpass") && server.arg("adminpass").length() > 0) {
     server.arg("adminpass").toCharArray(webAdminPass, sizeof(webAdminPass));
+    adminCredsChanged = true;
   }
   if (server.hasArg("lang")) {
     currentLanguage = (Language)server.arg("lang").toInt();
@@ -729,6 +808,12 @@ static void handleSave() {
     DataSourceType newSource = (DataSourceType)server.arg("datasrc").toInt();
     if (newSource != currentDataSource) dataSourceChanged = true;
     currentDataSource = newSource;
+  }
+  bool timezoneChanged = false;
+  if (server.hasArg("gmt_offset")) {
+    int newOffset = server.arg("gmt_offset").toInt();
+    if (newOffset != gmtOffsetSec) timezoneChanged = true;
+    gmtOffsetSec = newOffset;
   }
   if (server.hasArg("resultdur")) {
     // Server-side bounds matching the form's min/max - the HTML
@@ -776,12 +861,44 @@ static void handleSave() {
 
   saveConfig();
 
+  if (timezoneChanged) {
+    // No restart needed (unlike WiFi/data-source below) - configTime()
+    // is safe to call anytime and just re-arms the SNTP client with the
+    // new offset, re-syncing on its own shortly after.
+    configTime(gmtOffsetSec, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+  }
+
+  // Redact passwords/tokens - only note THAT they changed, never the
+  // value itself. See SystemLog.h's redactedPreview() for the same
+  // philosophy applied to the remember-me token below.
+  {
+    String changedList;
+    if (wifiChanged) changedList += "WiFi settings, ";
+    if (dataSourceChanged) changedList += String("data source=") + dataSourceLogName(currentDataSource) + ", ";
+    if (timezoneChanged) changedList += "timezone, ";
+    if (adminCredsChanged) changedList += "webadmin login, ";
+    if (sessionCookiesChanged) {
+      char preview[24];
+      redactedPreview(chessComRememberMe, preview, sizeof(preview));
+      changedList += String("remember-me=") + preview + ", ";
+    }
+    if (changedList.length() >= 2) changedList.remove(changedList.length() - 2);
+    if (changedList.length() == 0) changedList = "no tracked fields changed";
+    systemLog("Webadmin: saved (%s tab) - %s", server.arg("tab").c_str(), changedList.c_str());
+  }
+
   if (sessionCookiesChanged) {
     // Without this, ChessApiFunctions.cpp's session cookie jar keeps
     // using whatever was seeded at boot - a credential-only save doesn't
     // restart the device, so the globals above would silently drift out
     // of sync with the jar until the next reboot.
     refreshSessionCookies();
+    // This manual save writes remember_me via saveConfig() above, not
+    // persistSessionCookies() (that only covers the automatic rotation
+    // path in ChessApiFunctions.cpp) - stamp it here too so the very
+    // first save of a fresh cookie is on record, not just later
+    // auto-rotations.
+    recordGoodCookieWrite();
   }
 
   if (wifiChanged || dataSourceChanged) {
@@ -888,6 +1005,7 @@ static void handleChessComInvalidate() {
     currentDataSource = DATA_SOURCE_LICHESS_WIFI;
   }
   Serial.println("[AdminPortal] Chess.com cookie forgotten locally (no server-side revocation - chess.com has no such endpoint).");
+  systemLog("chess.com: remember-me forgotten locally (webadmin \"Forget cookie\")");
 
   server.send(200, "text/html",
               "<html><head><meta http-equiv='refresh' content='1;url=/connections'></head>"
@@ -911,6 +1029,7 @@ static void handleLichessDisconnect() {
   }
   saveConfig();
   Serial.println("[AdminPortal] Lichess disconnected (token forgotten locally).");
+  systemLog("Lichess: disconnected (token forgotten locally)");
 
   server.send(200, "text/html",
               "<html><head><meta http-equiv='refresh' content='1;url=/connections'></head>"
@@ -1026,6 +1145,36 @@ static bool tryConnectSavedWifi() {
   return WiFi.status() == WL_CONNECTED;
 }
 
+static const char *dataSourceLogName(DataSourceType src) {
+  switch (src) {
+    case DATA_SOURCE_LICHESS_WIFI: return "Lichess";
+    case DATA_SOURCE_CHESSCONNECT_BLE: return "ChessConnect";
+    case DATA_SOURCE_CHESSCOM_WIFI:
+    default: return "chess.com";
+  }
+}
+
+// Deliberately NOT logged inline in initAdminPortal() (right after
+// loadConfig(), before WiFi/NTP exist yet) - called separately from the
+// .ino, after initTime(), so its timestamp is actually meaningful.
+// getLocalTime() at that early point in initAdminPortal() would still
+// return true (the ESP32's RTC time domain survives a soft reset, so a
+// PREVIOUS boot's already-synced epoch is often still sitting there) but
+// with no timezone applied yet this session (configTime() hasn't run) -
+// the C library defaults to UTC in that state, so the line would show a
+// GMT_OFFSET_SEC-sized jump (3h on this device) relative to every log
+// line after it, once initTime() applies the real offset. Confirmed live
+// 2026-08-20: consecutive boots logged "15:32:28"/"15:37:10" for this
+// line vs. "12:34:07"/"12:39:17" moments later for ordinary events -
+// exactly a 3h gap, matching GMT_OFFSET_SEC in config.h.
+void logBootState() {
+  systemLog("Boot: source=%s, WiFi SSID=%s, remember-me=%s, phpsessid=%s",
+            dataSourceLogName(currentDataSource),
+            wifiSSID[0] ? wifiSSID : "(none saved)",
+            chessComRememberMe[0] ? "present" : "empty",
+            phpsessid[0] ? "present" : "empty");
+}
+
 void initAdminPortal(ClockState *statePtr) {
   g_state = statePtr;
   loadConfig();
@@ -1055,6 +1204,8 @@ void initAdminPortal(ClockState *statePtr) {
   server.on("/connections", handleConnections);
   server.on("/sounds", handleSounds);
   server.on("/leds", handleLeds);
+  server.on("/logs", handleLogs);
+  server.on("/logs/data", handleLogsData);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/chesscom/invalidate", HTTP_POST, handleChessComInvalidate);
   server.on("/sound/reset", HTTP_POST, handleSoundReset);

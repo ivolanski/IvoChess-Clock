@@ -1,11 +1,12 @@
 #include "TimeFunctions.h"
 #include "config.h"
+#include "AdminPortal.h"  // gmtOffsetSec - webadmin-configurable, config.h's GMT_OFFSET_SEC is only the factory default
 
 #include <Arduino.h>
 #include <time.h>
 
 void initTime() {
-  configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
+  configTime(gmtOffsetSec, DAYLIGHT_OFFSET_SEC, NTP_SERVER);
 
   struct tm timeinfo;
   if (getLocalTime(&timeinfo, 5000)) {

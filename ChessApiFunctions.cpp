@@ -1,6 +1,7 @@
 #include "ChessApiFunctions.h"
 #include "config.h"
 #include "AdminPortal.h"
+#include "SystemLog.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -42,6 +43,43 @@ bool getLastChessComSessionFailure(char *reasonOut, size_t reasonLen, char *when
   if (hasRecord) {
     dbgPrefs.getString("last_fail_why", "").toCharArray(reasonOut, reasonLen);
     dbgPrefs.getString("last_fail_when", "").toCharArray(whenOut, whenLen);
+  }
+  dbgPrefs.end();
+  return hasRecord;
+}
+
+// Companion to the failure record above, for a question a live serial
+// capture genuinely cannot answer: a capture can only span the time the
+// device is actually powered, so it can prove what happened right up to
+// the moment power was cut, but never the power-off window itself (no
+// power, no logging - not a tooling gap, a physical one). This sidesteps
+// that entirely by stamping flash, not Serial, every time
+// CHESSCOM_REMEMBERME is written with a real (non-empty) value - see the
+// call in AdminPortal.cpp's persistSessionCookies(). Whenever a future
+// "found empty at boot" failure fires, it can then report not just WHEN
+// it was discovered empty but WHEN IT WAS LAST KNOWN GOOD, regardless of
+// whether the gap between them was 40 minutes or 40 hours - works for a
+// test spanning a full overnight power-off exactly as well as five
+// minutes, since neither end of the measurement depends on anyone
+// having a live serial session open at the right moment.
+void recordGoodCookieWrite() {
+  char whenStr[24] = "unknown time";
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo, 0)) {
+    strftime(whenStr, sizeof(whenStr), "%Y-%m-%d %H:%M", &timeinfo);
+  }
+  Preferences dbgPrefs;
+  dbgPrefs.begin(SESSION_FAIL_PREFS_NAMESPACE, /*readOnly=*/false);
+  dbgPrefs.putString("last_good_when", whenStr);
+  dbgPrefs.end();
+}
+
+static bool getLastGoodCookieWrite(char *whenOut, size_t whenLen) {
+  Preferences dbgPrefs;
+  dbgPrefs.begin(SESSION_FAIL_PREFS_NAMESPACE, /*readOnly=*/true);
+  bool hasRecord = dbgPrefs.isKey("last_good_when");
+  if (hasRecord) {
+    dbgPrefs.getString("last_good_when", "").toCharArray(whenOut, whenLen);
   }
   dbgPrefs.end();
   return hasRecord;
@@ -169,6 +207,9 @@ static bool syncJarToGlobalsIfChanged() {
       c.value.toCharArray(chessComRememberMe, CHESSCOM_REMEMBERME_MAX_LEN);
       changed = true;
       Serial.println("[ChessAPI] Server rotated CHESSCOM_REMEMBERME - saving the new token (the old one is now dead).");
+      char preview[24];
+      redactedPreview(chessComRememberMe, preview, sizeof(preview));
+      systemLog("chess.com: remember-me rotated by server (%s)", preview);
     }
   }
   if (changed) {
@@ -273,6 +314,19 @@ static RenewAttemptResult renewSessionAttempt() {
 // (verified live 2026-08-11: a second, never-before-used browser's token
 // authenticated successfully) costs one extra request and meaningfully
 // lowers the odds of discarding a token that would have worked.
+// Shared by both persistSessionFailure() call sites below (empty-at-entry
+// and refused-twice-so-discarded) - a single guard, not one independent
+// bool per branch. Real bug found 2026-08-20: with two separate guards,
+// a genuine "refused twice, discarding" event correctly persisted its
+// true reason, but the very next poll cycle (~5s later, GAME_POLL_INTERVAL_MS)
+// hit the now-empty buffer, saw ITS OWN guard unset, and immediately
+// overwrote that true reason with a generic "Empty at boot" one - hiding
+// every refusal-triggered discard behind a misleading message, on every
+// single occurrence, with no way to tell the two apart from the webadmin.
+// One guard fixes it: whichever branch writes first each boot wins, and
+// the other is correctly suppressed instead of clobbering it.
+static bool alreadyLoggedFailureThisBoot = false;
+
 static bool renewSession() {
   if (chessComRememberMe[0] == '\0') {
     // Silent until now - this branch firing with nothing else printed
@@ -287,20 +341,35 @@ static bool renewSession() {
     // the webadmin's "Last drop" line stays blank and looks like nothing
     // ever happened, when in fact the cookie is sitting empty right now.
     // This exact gap is what made a real 2026-08-19 incident (device
-    // rebooted with CHESSCOM_REMEMBERME already blank, cause unconfirmed -
-    // no code path here had cleared it, so most likely an interrupted
-    // flash write) look untraceable from the webadmin alone.
+    // rebooted with CHESSCOM_REMEMBERME already blank) look untraceable
+    // from the webadmin alone. Cause still genuinely unconfirmed as of
+    // 2026-08-20 - an interrupted flash write shortly after saving was
+    // the leading guess, but a live retest that day waited 5+ minutes
+    // between saving and powering off (ample time for any in-flight
+    // write to settle) and it still reproduced, which doesn't fit a
+    // narrow post-save race window. Not treating that guess as
+    // confirmed - see recordGoodCookieWrite()/getLastGoodCookieWrite()
+    // below, added specifically so the NEXT occurrence reports the gap
+    // since the last known-good write instead of needing another guess.
     //
-    // Guarded to once per boot: this branch is hit on every poll cycle
-    // (every GAME_POLL_INTERVAL_MS, currently 5s) for as long as the
-    // cookie stays empty, and persistSessionFailure() is a flash write -
-    // writing it every 5s indefinitely would be needless wear, and
-    // ironically raises the odds of causing the exact kind of
-    // interrupted-write corruption suspected here in the first place.
-    static bool alreadyLoggedThisBoot = false;
-    if (!alreadyLoggedThisBoot) {
-      alreadyLoggedThisBoot = true;
-      persistSessionFailure("CHESSCOM_REMEMBERME was empty on renewal attempt");
+    // Guarded to once per boot (shared with the refused-twice branch
+    // below - see alreadyLoggedFailureThisBoot's comment): this branch is
+    // hit on every poll cycle (every GAME_POLL_INTERVAL_MS, currently 5s)
+    // for as long as the cookie stays empty, and persistSessionFailure()
+    // is a flash write - writing it every 5s indefinitely would be
+    // needless wear, and ironically raises the odds of causing the exact
+    // kind of interrupted-write corruption once suspected here.
+    if (!alreadyLoggedFailureThisBoot) {
+      alreadyLoggedFailureThisBoot = true;
+      char lastGoodWhen[24] = "";
+      char reasonBuf[64];
+      if (getLastGoodCookieWrite(lastGoodWhen, sizeof(lastGoodWhen))) {
+        snprintf(reasonBuf, sizeof(reasonBuf), "Empty at boot - last good write %s", lastGoodWhen);
+      } else {
+        snprintf(reasonBuf, sizeof(reasonBuf), "Empty at boot - never had a good write");
+      }
+      persistSessionFailure(reasonBuf);
+      systemLog("chess.com: %s", reasonBuf);
     }
     return false;  // nothing to renew with - user needs to recapture the cookie (webadmin only has the one field - see handleSave())
   }
@@ -313,6 +382,7 @@ static bool renewSession() {
     // RENEW_REFUSED
     if (attempt == 0) {
       Serial.println("[ChessAPI] Renewal refused - retrying once before concluding the token is actually dead (could be a one-off WAF/bot-check, not just a replayed token).");
+      systemLog("chess.com: renewal refused, retrying once");
       delay(2000);
       continue;
     }
@@ -334,7 +404,14 @@ static bool renewSession() {
     // around forever isn't better, but don't treat "why" as settled.
     Serial.println("[ChessAPI] Renewal was refused twice (redirected to login both times) - treating this CHESSCOM_REMEMBERME as dead.");
     Serial.println("[ChessAPI] Discarding it. Recapture the cookie in the webadmin (Connections tab - one field, PHPSESSID is derived automatically).");
+    // Set the shared guard BEFORE clearing the buffer below - the very
+    // next poll cycle will see chessComRememberMe empty and hit the
+    // branch at the top of this function, which must NOT be allowed to
+    // overwrite this genuinely more informative reason with a generic
+    // "Empty at boot" one (see alreadyLoggedFailureThisBoot's comment).
+    alreadyLoggedFailureThisBoot = true;
     persistSessionFailure("refused during renewal (twice)");
+    systemLog("chess.com: renewal refused twice - discarding remember-me token");
     chessComRememberMe[0] = '\0';
     refreshSessionCookies();
     persistSessionCookies();

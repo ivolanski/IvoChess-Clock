@@ -40,4 +40,13 @@ bool testChessComSession();
 // event has ever been recorded.
 bool getLastChessComSessionFailure(char *reasonOut, size_t reasonLen, char *whenOut, size_t whenLen);
 
+// Stamps flash (not just RAM) with the current time, every time
+// CHESSCOM_REMEMBERME is written with a genuine non-empty value - see the
+// call in AdminPortal.cpp's persistSessionCookies(). Lets a future "found
+// empty at boot" record report the gap since the last known-good write,
+// which works regardless of how long the device was powered off for
+// (minutes or overnight) - unlike a live serial capture, which can only
+// ever span the time the device is actually powered.
+void recordGoodCookieWrite();
+
 #endif  // CHESS_API_FUNCTIONS_H

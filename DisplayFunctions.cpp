@@ -395,7 +395,10 @@ static void drawSiteUrl() {
   int zoneTop = BOTTOM_SEP_Y + 2;
   int zoneBottom = SCREEN_HEIGHT - STATUS_BAR_MARGIN;
   int baseline = (zoneTop + zoneBottom) / 2 - y1 - (int)h / 2 + FOOTER_Y_ADJUST;
-  display.setCursor(STATUS_BAR_MARGIN, baseline);
+  // Horizontally centered (used to be pinned to STATUS_BAR_MARGIN from the
+  // left edge) - at ~97% of screen width it barely showed before, but it
+  // did leave a visible gap on the right that centering removes.
+  display.setCursor(((int)SCREEN_WIDTH - (int)w) / 2, baseline);
   display.print(SITE_URL);
 }
 

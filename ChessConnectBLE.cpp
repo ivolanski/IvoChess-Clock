@@ -7,6 +7,7 @@
 #include "ChessConnectBLE.h"
 #include "AdminPortal.h"  // resultDisplayDurationMs
 #include "SoundFunctions.h"
+#include "SystemLog.h"
 
 #include <ArduinoJson.h>
 #include <BLEDevice.h>
@@ -346,6 +347,7 @@ static int whiteIndex = -1;
 static void applyEvent(const ChessConnectEvent &event, ClockState &state) {
   switch (event.type) {
     case CC_EVENT_CONNECTED:
+      systemLog("ChessConnect: BLE central connected");
       break;
 
     case CC_EVENT_DISCONNECTED:
@@ -354,6 +356,7 @@ static void applyEvent(const ChessConnectEvent &event, ClockState &state) {
       // BLE blip shouldn't flash the display to idle; clocks/turn stay
       // exactly as last known until either traffic resumes or the game
       // genuinely ends with a result.
+      systemLog("ChessConnect: BLE central disconnected");
       snprintf(state.apiStatus, sizeof(state.apiStatus), "ChessConnect disconnected");
       state.apiOk = false;
       break;
@@ -402,6 +405,7 @@ static void applyEvent(const ChessConnectEvent &event, ClockState &state) {
         state.lastGameOutcome = OUTCOME_NONE;
         state.chessConnectMoveTextUntilMs = 0;
         state.newGameStarted = true;  // pulse - see ClockState.h
+        systemLog("ChessConnect: game started");
       }
       break;
     }
@@ -438,6 +442,7 @@ static void applyEvent(const ChessConnectEvent &event, ClockState &state) {
           state.resultDisplayUntilMs = millis() + resultDisplayDurationMs;
           whiteIndex = -1;  // re-detect for the next game
           Serial.printf("[ChessConnectBLE] Game finished: %s\n", summary);
+          systemLog("ChessConnect: game ended - %s", summary);
         }
       } else {
         // A move (or castling "0-0"/"0-0-0") - first real UI use of this

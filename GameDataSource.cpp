@@ -6,6 +6,7 @@
 #include "LichessLiveClient.h"
 #include "AdminPortal.h"
 #include "ChessConnectBLE.h"
+#include "SystemLog.h"
 
 DataSourceType currentDataSource = DATA_SOURCE_CHESSCOM_WIFI;
 
@@ -88,6 +89,8 @@ static bool updateFromChessComWiFi(ClockState &state) {
     snprintf(state.apiStatus, sizeof(state.apiStatus), "Idle timeout - restart to resume");
     Serial.printf("[GameDataSource] No game found for %lu min - stopping polling until restart.\n",
                   WAITING_FOR_GAME_TIMEOUT_MS / 60000UL);
+    systemLog("chess.com: waiting-for-game timeout (%lu min) - polling stopped until button/restart",
+              WAITING_FOR_GAME_TIMEOUT_MS / 60000UL);
     return false;
   }
 
@@ -132,6 +135,9 @@ static bool updateFromChessComWiFi(ClockState &state) {
     Serial.printf("[GameDataSource] New game found: %s(%d) vs %s(%d) - id=%s\n",
                   currentGame.players[0].username, currentGame.players[0].rating,
                   currentGame.players[1].username, currentGame.players[1].rating, currentGame.id);
+    systemLog("chess.com: game started - %s(%d) vs %s(%d)",
+              currentGame.players[0].username, currentGame.players[0].rating,
+              currentGame.players[1].username, currentGame.players[1].rating);
     state.players[0] = currentGame.players[0];
     state.players[1] = currentGame.players[1];
     state.moveCount = 0;
@@ -204,6 +210,8 @@ static bool updateFromLichessWiFi(ClockState &state) {
     snprintf(state.apiStatus, sizeof(state.apiStatus), "Idle timeout - restart to resume");
     Serial.printf("[GameDataSource] No Lichess game found for %lu min - stopping polling until restart.\n",
                   WAITING_FOR_GAME_TIMEOUT_MS / 60000UL);
+    systemLog("Lichess: waiting-for-game timeout (%lu min) - polling stopped until button/restart",
+              WAITING_FOR_GAME_TIMEOUT_MS / 60000UL);
     return false;
   }
 
@@ -258,6 +266,9 @@ static bool updateFromLichessWiFi(ClockState &state) {
                   currentLichessGame.myColorIsWhite ? "white" : "black",
                   currentLichessGame.opponent.username, currentLichessGame.opponent.rating,
                   currentLichessGame.id);
+    systemLog("Lichess: game started - me(%s) vs %s(%d)",
+              currentLichessGame.myColorIsWhite ? "white" : "black",
+              currentLichessGame.opponent.username, currentLichessGame.opponent.rating);
     state.moveCount = 0;
     state.activePlayerIndex = -1;
     state.clockBaselineMs[0] = 0;
@@ -314,6 +325,7 @@ void resumeGameSearch(ClockState &state) {
   // mathematically correct regardless of where the subtraction wrapped.
   state.idlePhaseStartedAtMs = now - SCREEN_CYCLE_INTERVAL_MS;
   Serial.println("[GameDataSource] Button pressed - resuming game search.");
+  systemLog("Button pressed - waiting-for-game timer reset, resuming search");
 }
 
 // ---- source: ChessConnect / DGT3000 via Bluetooth ----

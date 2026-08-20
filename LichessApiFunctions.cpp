@@ -1,5 +1,6 @@
 #include "LichessApiFunctions.h"
 #include "config.h"
+#include "SystemLog.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -96,6 +97,7 @@ bool lichessExchangeCodeForToken(const char *code, const char *verifier, const S
   strncpy(tokenOut, accessToken, tokenOutLen - 1);
   tokenOut[tokenOutLen - 1] = '\0';
   Serial.printf("[LichessAPI] Token exchange succeeded (token len=%u).\n", (unsigned)strlen(accessToken));
+  systemLog("Lichess: connected (OAuth token exchange succeeded)");
   return true;
 }
 
@@ -172,6 +174,14 @@ bool lichessFetchActiveGame(const char *token, LichessGameInfo &game,
     // GameDataSource.cpp is what surfaces this, this function just
     // reports it plainly.
     snprintf(statusOut, statusOutLen, "HTTP 401 (token revoked - reconnect in webadmin)");
+    // This fires on every poll (LICHESS_GAME_POLL_INTERVAL_MS) for as
+    // long as the token stays revoked - guard to once per boot, same
+    // reasoning as ChessApiFunctions.cpp's alreadyLoggedFailureThisBoot.
+    static bool alreadyLoggedThisBoot = false;
+    if (!alreadyLoggedThisBoot) {
+      alreadyLoggedThisBoot = true;
+      systemLog("Lichess: token revoked (HTTP 401) - reconnect needed in webadmin");
+    }
     http.end();
     return false;
   }

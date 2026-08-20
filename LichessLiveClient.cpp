@@ -2,6 +2,7 @@
 #include "config.h"
 #include "GameDataSource.h"
 #include "AdminPortal.h"
+#include "SystemLog.h"
 
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -230,6 +231,7 @@ static void applyGameOver(const char *status, const char *winnerColor) {
   g_state->lastGameOutcome = outcome;
   g_state->lastResultReason[0] = '\0';  // Lichess's board API doesn't give a separate per-player reason string like chess.com's does
   snprintf(g_state->lastResultSummary, sizeof(g_state->lastResultSummary), "%s", status);
+  systemLog("Lichess: game ended - %s", status);
 
   if (meIdx != -1) {
     int oppIdx = 1 - meIdx;
@@ -322,6 +324,7 @@ void lichessLiveConnect(const LichessGameInfo &game, const char *token) {
   int httpCode = http.GET();
   if (httpCode != 200) {
     Serial.printf("[LichessLive] Stream request failed: HTTP %d\n", httpCode);
+    systemLog("Lichess: game stream request failed (HTTP %d)", httpCode);
     http.end();
     connected = false;
     return;

@@ -4,6 +4,7 @@
 #include "GameDataSource.h"
 #include "RSocketCodec.h"
 #include "Translations.h"
+#include "SystemLog.h"
 
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
@@ -201,6 +202,7 @@ static void handlePayloadJson(const char *jsonStr, size_t jsonLen) {
     }
 
     Serial.printf("[LiveGame] Game finished: %s\n", summary);
+    systemLog("chess.com: game ended - %s", summary);
 
     strncpy(g_state->lastResultSummary, summary, sizeof(g_state->lastResultSummary) - 1);
     g_state->lastResultSummary[sizeof(g_state->lastResultSummary) - 1] = '\0';

@@ -2,6 +2,7 @@
 #include "config.h"
 #include "GameDataSource.h"
 #include "ChessConnectBLE.h"
+#include "SystemLog.h"
 
 void initButton() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
@@ -36,6 +37,7 @@ void updateButton(ClockState &state) {
       // paired to a game yet.
       if (state.hasGame) {
         if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) {
+          systemLog("Button pressed - sending ChessConnect move event");
           chessConnectSendButtonEvent();
         }
       } else {
