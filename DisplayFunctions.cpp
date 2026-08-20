@@ -188,15 +188,26 @@ static int batteryBarCount(int percentage) {
   return (bars > 4) ? 4 : bars;
 }
 
-// 0-4 bars from RSSI - finer-grained than wifiQualityLabel()'s 3-tier
-// Poor/Good/Excellent, purely for this icon.
+// 1-3 bars from RSSI, out of a 3-segment icon (see WIFI_BAR_SEGMENTS) -
+// four total renderings on screen, matching four human-meaningful states:
+// 0 bars = no connection, 1 = poor, 2 = ok, 3 = very good (2026-08-20
+// feedback - a plain 0-4 scale doesn't map onto a clean set of named
+// tiers). Reuses the exact same RSSI cutoffs as wifiQualityLabel()'s
+// Poor/Good/Excellent (AdminPortal.cpp's webadmin WiFi card pill), so the
+// e-paper icon and the webadmin's own quality label always agree with
+// each other instead of using two different scales. Only ever called for
+// a genuine live connection (see drawTopStatusBar()) - never returns 0;
+// that's drawn explicitly by the caller for "not connected at all",
+// so "connected but bad" can never render identically to "no connection".
 static int wifiBarCount(int rssi) {
-  if (rssi >= -55) return 4;
-  if (rssi >= -65) return 3;
-  if (rssi >= -75) return 2;
-  if (rssi >= -85) return 1;
-  return 0;
+  if (rssi > -60) return 3;   // Excellent
+  if (rssi > -75) return 2;   // Good
+  return 1;                    // Poor
 }
+
+// Segment count for the WiFi signal icon - see wifiBarCount()'s comment
+// for why this is 3, not the more common 4-bar phone-style icon.
+#define WIFI_BAR_SEGMENTS 3
 
 // Ascending-height bars (like a phone signal icon) - x is the left edge.
 // Returns the total width drawn, so callers can lay out what follows.
@@ -236,19 +247,39 @@ static int drawGaugeBars(int x, int baselineY, int filled, int total) {
 static void drawTopStatusBar(const ClockState &state) {
   display.setFont(&FreeMonoBold9pt7b);
 
-  // Left: WiFi. Disconnected shows as plain text (no point in signal
-  // bars for a network we're not even on) - connected shows a short
-  // SSID plus signal bars right after it.
+  // Left: WiFi. apMode shows a short "Hotspot" label (no signal bars - no
+  // real "signal" concept for a network this device is broadcasting
+  // itself) rather than the AP's actual name (SETUP_AP_NAME,
+  // "IvoChess-Setup") - the user already knows/configured that once,
+  // showing it here just ate width for no benefit and crowded the BT
+  // indicator right after it. Otherwise (whether currently connected or
+  // not) it's always the saved network's name plus a signal-bar icon -
+  // disconnected shows the same SSID with all 4 bars empty rather than a
+  // separate "WiFi: Disconnected" text state (2026-08-20 feedback: a
+  // consistent name+bars symbol reads better than switching to text, and
+  // an all-empty icon is still an unambiguous "no signal" cue). Safe to
+  // always read state.wifiSSID here - apMode being false at all means the
+  // saved network connected successfully at least once at boot (see
+  // tryConnectSavedWifi()), so it can never be empty in this branch even
+  // if the connection has since dropped.
   display.setCursor(STATUS_BAR_MARGIN, STATUS_BAR_BASELINE);
   int cursorX;
-  if (!state.wifiConnected) {
-    char buf[24];
-    snprintf(buf, sizeof(buf), "%s %s", T(STR_WIFI), T(STR_DISCONNECTED));
-    display.print(buf);
+  if (state.apMode) {
+    const char *hotspotLabel = T(STR_HOTSPOT);
+    display.print(hotspotLabel);
     int16_t x1, y1;
     uint16_t w, h;
-    display.getTextBounds(buf, 0, 0, &x1, &y1, &w, &h);
-    cursorX = STATUS_BAR_MARGIN + (int)w;
+    display.getTextBounds(hotspotLabel, 0, 0, &x1, &y1, &w, &h);
+    // Full bars, not empty/omitted - reaching this screen at all means the
+    // hotspot is actively broadcasting right now (WiFi.softAP() already
+    // succeeded by the time apMode is true - see startApMode()), so unlike
+    // the "no signal" case below there's a definite, always-true state to
+    // show here, not an absence of one. Matches the other two branches'
+    // name+bars shape instead of leaving this one looking like a
+    // mismatched omission (2026-08-20 feedback).
+    int barsX = STATUS_BAR_MARGIN + (int)w + 6;
+    int barsW = drawSignalBars(barsX, STATUS_BAR_BASELINE, WIFI_BAR_SEGMENTS, WIFI_BAR_SEGMENTS);
+    cursorX = barsX + barsW;
   } else {
     char ssidShort[11];
     strncpy(ssidShort, state.wifiSSID, 10);
@@ -259,13 +290,28 @@ static void drawTopStatusBar(const ClockState &state) {
     uint16_t w, h;
     display.getTextBounds(ssidShort, 0, 0, &x1, &y1, &w, &h);
     int barsX = STATUS_BAR_MARGIN + w + 6;
-    int barsW = drawSignalBars(barsX, STATUS_BAR_BASELINE, wifiBarCount(state.wifiStrength), 4);
+    int filled = state.wifiConnected ? wifiBarCount(state.wifiStrength) : 0;
+    int barsW = drawSignalBars(barsX, STATUS_BAR_BASELINE, filled, WIFI_BAR_SEGMENTS);
     cursorX = barsX + barsW;
   }
 
-  // ChessConnect only: a "BT" indicator right after the WiFi block -
-  // WiFi here is just for the admin portal/NTP, the actual game data
-  // comes over Bluetooth, so it's worth its own at-a-glance status.
+  // Right edge, needed below to center the BT indicator - battery itself
+  // is drawn later, but its position doesn't depend on anything computed
+  // in between.
+  const int battTotalW = 4 * 4 + 3 * 1;  // matches drawGaugeBars(total=4) geometry
+  int battX = SCREEN_WIDTH - STATUS_BAR_MARGIN - battTotalW;
+
+  // ChessConnect only: a "BT" indicator, centered in the gap between the
+  // WiFi block and the battery icon - WiFi here is just for the admin
+  // portal/NTP, the actual game data comes over Bluetooth, so it's worth
+  // its own at-a-glance status. Previously sat right after the WiFi block
+  // with a fixed 8px gap, which looked cramped/lopsided whenever that
+  // block was short (e.g. "Hotspot" - reported live 2026-08-20), leaving a
+  // big empty gap before the battery icon instead. Centering the whole
+  // block (text + bars together, not just the text) reads balanced
+  // regardless of how wide the WiFi block ends up being; minGapX still
+  // guarantees at least the old 8px clearance so long SSIDs can't collide
+  // with it.
   // "BT(P)" = advertising, waiting to pair; "BT" + bars once a central
   // is actually connected. Real per-connection RSSI isn't straightforward
   // to read from this BLE stack, so the bars show full/empty as a
@@ -273,24 +319,25 @@ static void drawTopStatusBar(const ClockState &state) {
   // (unlike the WiFi bars, which are real RSSI) - worth knowing if this
   // ever looks static compared to the WiFi ones.
   if (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE) {
-    cursorX += 8;
-    display.setCursor(cursorX, STATUS_BAR_BASELINE);
     bool connected = chessConnectBleIsConnected();
     const char *btLabel = connected ? "BT" : "BT(P)";
+    int16_t x1, y1;
+    uint16_t w, h;
+    display.getTextBounds(btLabel, 0, 0, &x1, &y1, &w, &h);
+    const int barsGap = 4;
+    const int barsTotalW = 4 * 3 + 3 * 1;  // matches drawSignalBars(total=4) geometry: barW=3, gap=1
+    int blockW = (int)w + (connected ? (barsGap + barsTotalW) : 0);
+
+    int minGapX = cursorX + 8;
+    int available = battX - minGapX;
+    int btX = minGapX + (available > blockW ? (available - blockW) / 2 : 0);
+
+    display.setCursor(btX, STATUS_BAR_BASELINE);
     display.print(btLabel);
     if (connected) {
-      int16_t x1, y1;
-      uint16_t w, h;
-      display.getTextBounds(btLabel, 0, 0, &x1, &y1, &w, &h);
-      drawSignalBars(cursorX + (int)w + 4, STATUS_BAR_BASELINE, 4, 4);
+      drawSignalBars(btX + (int)w + barsGap, STATUS_BAR_BASELINE, 4, 4);
     }
   }
-
-  // Right: battery, as bars only (no percentage number - config asked
-  // for an at-a-glance gauge here, the exact number is still on the game
-  // screen via drawBatteryLabel).
-  const int battTotalW = 4 * 4 + 3 * 1;  // matches drawGaugeBars(total=4) geometry
-  int battX = SCREEN_WIDTH - STATUS_BAR_MARGIN - battTotalW;
   drawGaugeBars(battX, STATUS_BAR_BASELINE, batteryBarCount(state.batteryPercentage), 4);
 
   display.drawFastHLine(0, STATUS_BAR_BASELINE + 5, SCREEN_WIDTH, GxEPD_BLACK);
@@ -368,7 +415,14 @@ static void drawBottomBar(const char *noteLabel, const char *noteValue) {
 // recapture CHESSCOM_REMEMBERME in webadmin)" meant for Serial/debugging,
 // not a small e-paper screen with wrapping disabled - see initDisplay()).
 static const char *statusHeadline(const ClockState &state) {
-  if (!state.wifiConnected) return T(STR_WIFI_CONNECTING);
+  // ChessConnect doesn't need WiFi at all, so it must never fall into this
+  // message just because the saved network isn't in range (e.g. apMode
+  // away from home - see updateDisplay()'s showSetupScreen). Its own
+  // apiOk/STR_WAITING_FOR_BLUETOOTH handling further down already covers
+  // it accurately.
+  if (currentDataSource != DATA_SOURCE_CHESSCONNECT_BLE && !state.wifiConnected) {
+    return T(STR_WIFI_CONNECTING);
+  }
   // Checked before apiOk/apiStatus: once GameDataSource.cpp gives up
   // polling after WAITING_FOR_GAME_TIMEOUT_MS idle, this is the ONLY
   // thing worth telling the user - a restart is required, no other
@@ -567,7 +621,20 @@ static void drawWaitingStatusContent(const ClockState &state) {
 
   printCenteredWrapped(headline, 44, MESSAGE_ZONE_BOTTOM, 22, SCREEN_WIDTH - 20);
 
-  drawBottomBar("WEBADMIN:", state.wifiConnected ? state.ipAddress : "-");
+  // apMode's IP is the hotspot's own address (softAPIP(), already what
+  // state.ipAddress holds in that case - see updateWiFiStatus() in
+  // AdminPortal.cpp) - webadmin is reachable there same as ever, just
+  // worth the "Hotspot" qualifier so it doesn't read as a real network.
+  char webadminValue[24];
+  if (state.apMode) {
+    snprintf(webadminValue, sizeof(webadminValue), "%s %s", T(STR_HOTSPOT), state.ipAddress);
+  } else if (state.wifiConnected) {
+    strncpy(webadminValue, state.ipAddress, sizeof(webadminValue) - 1);
+    webadminValue[sizeof(webadminValue) - 1] = '\0';
+  } else {
+    strcpy(webadminValue, "-");
+  }
+  drawBottomBar("WEBADMIN:", webadminValue);
 }
 
 // Dedicated "game over" screen - shown for resultDisplayDurationMs
@@ -849,10 +916,25 @@ static void updateDisplay(bool fullRefresh, const ClockState &state) {
 
   bool showingResult = (millis() < state.resultDisplayUntilMs);
 
+  // ChessConnect doesn't need WiFi at all - the game data comes over
+  // Bluetooth regardless of apMode (see ChessConnectBLE.cpp/
+  // GameDataSource.cpp's updateFromChessConnectBLE()). Taking over the
+  // whole screen with "SETUP MODE" whenever the saved WiFi isn't in range
+  // (e.g. the user took the clock somewhere else to play) was actively
+  // misleading for this source: it reads as broken/unconfigured even
+  // while ChessConnect is working fine. So this source skips the
+  // dedicated setup screen and falls through to its normal waiting/game
+  // screens instead - drawTopStatusBar()/drawWaitingStatusContent() below
+  // already know how to show the hotspot info in the WiFi/webadmin slots
+  // instead of "Disconnected"/"-" for exactly this case. Every other
+  // source (chess.com/Lichess) genuinely needs a real network, so they
+  // keep the original behavior unchanged.
+  bool showSetupScreen = state.apMode && currentDataSource != DATA_SOURCE_CHESSCONNECT_BLE;
+
   if (state.hasGame) {
     // Never alternates to the logo while a game is in progress.
     drawGameContent(state);
-  } else if (state.apMode) {
+  } else if (showSetupScreen) {
     drawSetupModeContent(state);
   } else if (showingResult) {
     // Dedicated result screen has priority over the logo for its

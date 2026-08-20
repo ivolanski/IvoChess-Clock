@@ -23,7 +23,6 @@ char myUsername[USERNAME_MAX_LEN] = "";
 char lichessToken[LICHESS_TOKEN_MAX_LEN] = DEFAULT_LICHESS_TOKEN;
 char lichessUsername[USERNAME_MAX_LEN] = "";
 
-uint8_t ledColorNoWifi[3];
 uint8_t ledColorLowBattery[3];
 uint8_t ledColorWon[3];
 uint8_t ledColorLost[3];
@@ -120,7 +119,6 @@ static void loadConfig() {
   currentLanguage = (Language)prefs.getInt("lang", LANG_EN);
   currentDataSource = (DataSourceType)prefs.getInt("datasrc", DATA_SOURCE_CHESSCOM_WIFI);
 
-  hexToRgb(prefs.getString("led_nowifi", DEFAULT_LED_NO_WIFI), ledColorNoWifi);
   hexToRgb(prefs.getString("led_lowbatt", DEFAULT_LED_LOW_BATTERY), ledColorLowBattery);
   hexToRgb(prefs.getString("led_won", DEFAULT_LED_WON), ledColorWon);
   hexToRgb(prefs.getString("led_lost", DEFAULT_LED_LOST), ledColorLost);
@@ -161,7 +159,6 @@ static void saveConfig() {
   prefs.putInt("lang", (int)currentLanguage);
   prefs.putInt("datasrc", (int)currentDataSource);
 
-  prefs.putString("led_nowifi", rgbToHex(ledColorNoWifi));
   prefs.putString("led_lowbatt", rgbToHex(ledColorLowBattery));
   prefs.putString("led_won", rgbToHex(ledColorWon));
   prefs.putString("led_lost", rgbToHex(ledColorLost));
@@ -228,6 +225,7 @@ static const char PAGE_STYLE[] =
     ".updatebtn{display:inline-block;flex:none;text-decoration:none;padding:3px 9px;border-radius:999px;font-size:0.7rem;font-weight:600;white-space:nowrap;}"
     ".updatebtn.due{background:rgba(220,38,38,.15);color:var(--bad);}"
     ".updatebtn.ok{background:rgba(22,163,74,.15);color:var(--ok);cursor:default;}"
+    ".updatebtn.check{background:rgba(37,99,235,.15);color:var(--accent);}"
     ".sitefoot{text-align:center;margin-top:24px;font-size:0.8rem;}"
     ".card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px;margin-bottom:10px;}"
     ".row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.9rem;}"
@@ -285,7 +283,6 @@ static const char PAGE_SCRIPT[] =
     "}"
     "function testLeds(){"
     "postForm('/led/test',{"
-    "led_nowifi:document.getElementById('led_nowifi').value,"
     "led_lowbatt:document.getElementById('led_lowbatt').value,"
     "led_myturn:document.getElementById('led_myturn').value,"
     "led_oppturn:document.getElementById('led_oppturn').value,"
@@ -361,7 +358,13 @@ static String pageHead(const char *activeTab) {
   // quality used to live here too but moved into the WiFi card itself (see
   // handleRoot()), since they're WiFi settings, not general page chrome.
   if (apMode) {
-    html += "<div class='sub'>Setup hotspot - not on a real network yet</div>";
+    // Same "label · IP" shape as the connected case below, just with
+    // "Hotspot" standing in for the hostname - reachable at this address
+    // regardless of why apMode is active (saved WiFi out of range, never
+    // configured, or ChessConnect users who don't need WiFi at all and
+    // came here on purpose to change settings - see the 2026-08-19
+    // ChessConnect-away-from-home discussion).
+    html += "<div class='sub'>Hotspot &middot; " + WiFi.softAPIP().toString() + "</div>";
   } else {
     html += "<div class='sub'>http://" + String(MDNS_HOSTNAME) + ".local/ &middot; " + WiFi.localIP().toString() + "</div>";
   }
@@ -371,9 +374,14 @@ static String pageHead(const char *activeTab) {
   // Three states: an update is due (red, links to the flashing page - same
   // one used to install this very build), confirmed up to date (green,
   // static - nothing to click), or not yet known (checkForFirmwareUpdate()
-  // hasn't completed a check yet, e.g. fresh boot or no WiFi) - shows
-  // nothing rather than guessing, since latestVersionTag is only ever
-  // populated by a successful check.
+  // hasn't completed a check yet - fresh boot, or the DEVICE has no WiFi/
+  // is in apMode, so it can never reach GitHub itself; see its own
+  // apMode-gated early return). That last case still gets a button, not
+  // nothing: the BROWSER loading this page may well have its own internet
+  // access regardless of the device's - e.g. anyone on the setup hotspot
+  // testing ChessConnect can still tap through to check manually. Links
+  // to the same page either way, just phrased as a question instead of an
+  // answer we don't actually have.
   if (updateAvailable) {
     // latestVersionTag already carries the GitHub tag's leading "v" (e.g.
     // "v2.0.5") - see checkForFirmwareUpdate() - so don't prepend another one.
@@ -381,6 +389,8 @@ static String pageHead(const char *activeTab) {
             String(latestVersionTag) + "</a>";
   } else if (latestVersionTag[0] != '\0') {
     html += "<span class='updatebtn ok'>Updated</span>";
+  } else {
+    html += "<a href='https://ivochessclock.com/build.html' target='_blank' rel='noopener' class='updatebtn check'>Check for updates</a>";
   }
   html += "</div></div>";
 
@@ -630,7 +640,6 @@ static void handleLeds() {
   html += "<label>Number of LEDs</label><input type='number' id='led_count' name='led_count' min='1' max='60' value='" + String(ledCount) + "'>";
   html += "<small>Must match how many LEDs are actually wired on the strip - only matters if your build uses a "
           "different strip length than the default.</small>";
-  html += "<div class='colorrow'><label>No WiFi</label><input type='color' id='led_nowifi' name='led_nowifi' value='" + rgbToHex(ledColorNoWifi) + "'></div>";
   html += "<div class='colorrow'><label>Low battery (blinks)</label><input type='color' id='led_lowbatt' name='led_lowbatt' value='" + rgbToHex(ledColorLowBattery) + "'></div>";
   html += "<div class='colorrow'><label>Your turn</label><input type='color' id='led_myturn' name='led_myturn' value='" + rgbToHex(ledColorMyTurn) + "'></div>";
   html += "<div class='colorrow'><label>Opponent's turn</label><input type='color' id='led_oppturn' name='led_oppturn' value='" + rgbToHex(ledColorOpponentTurn) + "'></div>";
@@ -653,6 +662,17 @@ static void handleSave() {
   if (!checkAuth()) return;
 
   bool wifiChanged = false;
+  // Switching data sources mid-session left stale state around (the
+  // e-paper's needsFullRefresh tracking in IvoChess_Clock.ino has no idea
+  // currentDataSource just changed, so it kept showing whatever screen was
+  // already up - reported live 2026-08-20: switched to ChessConnect from
+  // the AP-mode setup screen, and the setup screen just stayed there).
+  // Restarting is the same fix WiFi changes already use below, for the
+  // same reason: nothing worth preserving survives a source switch anyway
+  // (you're deliberately leaving the old source's connection behind), so
+  // a clean re-init beats trying to patch every place that reads
+  // currentDataSource into also handling a live switch correctly.
+  bool dataSourceChanged = false;
 
   if (server.hasArg("ssid") && server.arg("ssid") != String(wifiSSID)) {
     server.arg("ssid").toCharArray(wifiSSID, sizeof(wifiSSID));
@@ -706,7 +726,9 @@ static void handleSave() {
     currentLanguage = (Language)server.arg("lang").toInt();
   }
   if (server.hasArg("datasrc")) {
-    currentDataSource = (DataSourceType)server.arg("datasrc").toInt();
+    DataSourceType newSource = (DataSourceType)server.arg("datasrc").toInt();
+    if (newSource != currentDataSource) dataSourceChanged = true;
+    currentDataSource = newSource;
   }
   if (server.hasArg("resultdur")) {
     // Server-side bounds matching the form's min/max - the HTML
@@ -718,7 +740,6 @@ static void handleSave() {
     soundVolume = (uint8_t)constrain(server.arg("snd_volume").toInt(), 0, 100);
   }
 
-  if (server.hasArg("led_nowifi")) hexToRgb(server.arg("led_nowifi"), ledColorNoWifi);
   if (server.hasArg("led_lowbatt")) hexToRgb(server.arg("led_lowbatt"), ledColorLowBattery);
   if (server.hasArg("led_won")) hexToRgb(server.arg("led_won"), ledColorWon);
   if (server.hasArg("led_lost")) hexToRgb(server.arg("led_lost"), ledColorLost);
@@ -763,14 +784,16 @@ static void handleSave() {
     refreshSessionCookies();
   }
 
-  if (wifiChanged) {
-    // Only a WiFi network/password change actually needs a reboot (to
-    // re-run WiFi.begin() cleanly) - everything else (LED colors,
-    // username, phpsessid, language, result duration) already took
-    // effect in the running globals above, no restart needed. This
-    // matters because a restart tears down any in-progress live game
-    // connection for no reason.
-    server.send(200, "text/html", "<html><body><h3>Saved. Restarting to apply new WiFi settings...</h3></body></html>");
+  if (wifiChanged || dataSourceChanged) {
+    // Only a WiFi network/password change or a data-source switch actually
+    // needs a reboot (to re-run WiFi.begin(), or to fully re-init the game
+    // data flow and let the display catch up - see dataSourceChanged's
+    // comment above) - everything else (LED colors, username, phpsessid,
+    // language, result duration) already takes effect in the running
+    // globals above, no restart needed. This matters because a restart
+    // tears down any in-progress live game connection for no reason.
+    const char *reason = wifiChanged ? "new WiFi settings" : "the new data source";
+    server.send(200, "text/html", "<html><body><h3>Saved. Restarting to apply " + String(reason) + "...</h3></body></html>");
     delay(1000);
     ESP.restart();
   } else {
@@ -954,22 +977,21 @@ static void handleSoundTest() {
   server.send(200, "text/plain", "OK");
 }
 
-// POST /led/test - cycles the strip through the 7 CURRENTLY TYPED LED
+// POST /led/test - cycles the strip through the 6 CURRENTLY TYPED LED
 // colors from the submitted form (even if not saved yet), one at a time -
 // see LedFunctions.h's startLedTest(). Same "preview before you save"
 // reasoning as handleSoundTest() above.
 static void handleLedTest() {
   if (!checkAuth()) return;
 
-  uint8_t colors[7][3];
-  hexToRgb(server.arg("led_nowifi"), colors[0]);
-  hexToRgb(server.arg("led_lowbatt"), colors[1]);
-  hexToRgb(server.arg("led_myturn"), colors[2]);
-  hexToRgb(server.arg("led_oppturn"), colors[3]);
-  hexToRgb(server.arg("led_won"), colors[4]);
-  hexToRgb(server.arg("led_lost"), colors[5]);
-  hexToRgb(server.arg("led_draw"), colors[6]);
-  startLedTest(colors, 7);
+  uint8_t colors[6][3];
+  hexToRgb(server.arg("led_lowbatt"), colors[0]);
+  hexToRgb(server.arg("led_myturn"), colors[1]);
+  hexToRgb(server.arg("led_oppturn"), colors[2]);
+  hexToRgb(server.arg("led_won"), colors[3]);
+  hexToRgb(server.arg("led_lost"), colors[4]);
+  hexToRgb(server.arg("led_draw"), colors[5]);
+  startLedTest(colors, 6);
   Serial.println("[AdminPortal] Testing LED colors.");
 
   // Only ever called via the LEDs tab's fetch() (see PAGE_SCRIPT) - no

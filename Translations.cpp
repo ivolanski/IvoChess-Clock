@@ -26,6 +26,7 @@ static const char *STRINGS_EN[STR_COUNT] = {
   "Press the button",
   "Waiting for Bluetooth...",
   "Opp",
+  "Hotspot",
 };
 
 static const char *STRINGS_PT[STR_COUNT] = {
@@ -52,6 +53,7 @@ static const char *STRINGS_PT[STR_COUNT] = {
   "Aperte o botao",
   "Aguardando Bluetooth...",
   "Adv",
+  "Hotspot",
 };
 
 const char *T(StringId id) {

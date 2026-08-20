@@ -8,7 +8,7 @@
 // N:\documents\AI\claude\CLAUDE.md's release procedure) with every push to
 // master that a user would actually want to know about.
 // ---------------------------------------------------------------------------
-#define FIRMWARE_VERSION "2.1.0"
+#define FIRMWARE_VERSION "2.1.1"
 
 // ---------------------------------------------------------------------------
 // Default/fallback values - only used BEFORE anything is saved in flash
@@ -22,7 +22,14 @@
 #define DEFAULT_CHESSCOM_REMEMBERME ""
 
 #define SETUP_AP_NAME "IvoChess-Setup"
-#define WIFI_CONNECT_TIMEOUT_SECONDS 60
+// Was 60s - live testing (2026-08-20) showed a real connection always
+// succeeds well under 10s; anything still not connected past that point
+// just wasn't going to connect at all (wrong password, network out of
+// range/off, 5GHz-only SSID - see the 2.4GHz-only hardware note on
+// SETUP_AP_NAME's usage), so the extra 50s was pure dead time on every
+// boot away from a reachable network - most noticeable for ChessConnect,
+// which doesn't even need WiFi to function (see initChessConnectBLE()).
+#define WIFI_CONNECT_TIMEOUT_SECONDS 10
 #define MDNS_HOSTNAME "ivochessclock"  // also reachable at http://ivochessclock.local/
 
 #define PREFS_NAMESPACE "ivochess"
@@ -255,7 +262,6 @@
 #define DEFAULT_LED_BRIGHTNESS_NIGHT 100
 #define LOW_BATTERY_THRESHOLD_PERCENT 15
 
-#define DEFAULT_LED_NO_WIFI        "#800080"  // purple
 #define DEFAULT_LED_LOW_BATTERY    "#ff0000"  // red
 #define DEFAULT_LED_WON            "#00ff00"  // green
 #define DEFAULT_LED_LOST           "#ff1493"  // pink

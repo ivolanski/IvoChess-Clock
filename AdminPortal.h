@@ -48,7 +48,6 @@ extern char lichessUsername[];
 // LED colors (see LedFunctions.cpp) - all configurable from the admin
 // portal, defaults come from config.h (DEFAULT_LED_*) the first time the
 // device boots. {R, G, B}, 0-255 each.
-extern uint8_t ledColorNoWifi[3];
 extern uint8_t ledColorLowBattery[3];
 extern uint8_t ledColorWon[3];
 extern uint8_t ledColorLost[3];

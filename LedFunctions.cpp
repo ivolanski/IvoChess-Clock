@@ -88,10 +88,15 @@ void updateLEDs(const ClockState &state) {
 
   strip.setBrightness(isNightTime() ? ledBrightnessNight : ledBrightnessDay);
 
-  if (!state.wifiConnected) {
-    setAllLEDs(ledColorNoWifi[0], ledColorNoWifi[1], ledColorNoWifi[2]);
-    return;
-  }
+  // Used to show a dedicated "No WiFi" color here, ahead of everything
+  // below - removed 2026-08-20: it made the LEDs permanently stuck on that
+  // color for ChessConnect users away from home (state.wifiConnected is
+  // always false there by design - see AdminPortal.cpp's updateWiFiStatus -
+  // even though the game itself works fine over Bluetooth), hiding every
+  // other signal (whose turn, win/loss) for the entire session. Removed
+  // outright rather than special-cased per data source, for simplicity -
+  // the e-paper display already covers "no WiFi" clearly on its own
+  // (setup-mode screen / status bar), the LEDs don't need to duplicate it.
 
   // Figure out the "true" state color first, then only LAYER the
   // low-battery warning on top as a blink (alternating with the true
