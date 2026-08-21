@@ -8,7 +8,10 @@
 #include "ChessConnectBLE.h"
 #include "SystemLog.h"
 
-DataSourceType currentDataSource = DATA_SOURCE_CHESSCOM_WIFI;
+// ChessConnect, not chess.com, while chess.com is temporarily hidden from
+// the webadmin (see AdminPortal.cpp's handleConnections() comment) - a
+// fresh device should land somewhere actually selectable/working.
+DataSourceType currentDataSource = DATA_SOURCE_CHESSCONNECT_BLE;
 
 const char *activeMyUsername() {
   switch (currentDataSource) {

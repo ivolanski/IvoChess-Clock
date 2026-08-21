@@ -144,7 +144,7 @@ static void loadConfig() {
   prefs.getString("admin_user", DEFAULT_WEBADMIN_USER).toCharArray(webAdminUser, sizeof(webAdminUser));
   prefs.getString("admin_pass", DEFAULT_WEBADMIN_PASS).toCharArray(webAdminPass, sizeof(webAdminPass));
   currentLanguage = (Language)prefs.getInt("lang", LANG_EN);
-  currentDataSource = (DataSourceType)prefs.getInt("datasrc", DATA_SOURCE_CHESSCOM_WIFI);
+  currentDataSource = (DataSourceType)prefs.getInt("datasrc", DATA_SOURCE_CHESSCONNECT_BLE);
   gmtOffsetSec = prefs.getInt("gmt_offset_s", GMT_OFFSET_SEC);
 
   hexToRgb(prefs.getString("led_lowbatt", DEFAULT_LED_LOW_BATTERY), ledColorLowBattery);
@@ -469,7 +469,8 @@ static String pageFoot(const char *activeTab) {
   String html = "<input type='hidden' name='tab' value='" + String(activeTab) + "'>";
   html += "<input type='submit' value='Save'>";
   html += "</form>";
-  html += "<div class='sitefoot'><a href='https://ivochessclock.com' target='_blank' rel='noopener'>ivochessclock.com &#8599;</a></div>";
+  html += "<div class='sitefoot'><a href='https://ivochessclock.com' target='_blank' rel='noopener'>ivochessclock.com &#8599;</a>"
+          " &middot; <a href='https://chessconnect.de/' target='_blank' rel='noopener'>Get ChessConnect app &#8599;</a></div>";
   html += PAGE_SCRIPT;
   html += "</body></html>";
   return html;
@@ -525,43 +526,13 @@ static void handleConnections() {
   String html = pageHead("connections");
   html += "<form method='POST' action='/save'>";
 
-  html += "<h2>Chess.com account</h2><div class='card'>";
-  // Simple 3-state status, right next to the field it describes - the
-  // fuller forensic detail (why/when it last dropped) used to live here
-  // too as a "Session status"/"Last drop" pair of lines, but that's now
-  // redundant with the Logs tab (see SystemLog.h) and just cluttered the
-  // one thing this card actually needs to answer: is the stored cookie
-  // good right now. Tested live on every page load (a real request, not
-  // a cached guess) - see testChessComSession(); a WiFi/transport issue
-  // reads as "Invalid" here same as an actually-dead cookie, which is a
-  // deliberate simplification (WiFi status has its own indicator
-  // elsewhere on the page).
-  //
-  // Right-aligned own-line pill above the label, same layout as the WiFi
-  // quality pill in handleRoot() (main tab) - label pulled up with
-  // margin-top:-4px so it reads as attached to the pill above it rather
-  // than a separate row.
-  html += "<div style='display:flex;justify-content:flex-end'>";
-  if (chessComRememberMe[0] == '\0') {
-    html += "<span class='pill warn'>Empty</span>";
-  } else if (testChessComSession()) {
-    html += "<span class='pill ok'>Valid</span>";
-  } else {
-    html += "<span class='pill bad'>Invalid</span>";
-  }
-  html += "</div>";
-  html += "<label style='margin-top:-4px'>CHESSCOM_REMEMBERME cookie</label>"
-          "<input type='password' name='remembme' placeholder='(leave empty to keep current)' autocomplete='off'>";
-  html += "<small>Step-by-step to get your remember me at: ivochessclock.com</small>";
-  html += "<label style='margin-top:14px'>Your username</label><input type='text' name='myusername' value='" + String(myUsername) + "' placeholder='e.g. IVO-88'>";
-  if (phpsessid[0] != '\0' || chessComRememberMe[0] != '\0') {
-    // formaction/formmethod (HTML5), not a nested <form> - same reasoning
-    // as the Lichess "Disconnect" button below. Separate from leaving the
-    // cookie field empty on Save, which deliberately KEEPS the current
-    // cookie - this is the explicit "throw it away" action instead.
-    html += "<button type='submit' formaction='/chesscom/invalidate' formmethod='POST' style='margin-top:14px'>Forget cookie</button>";
-  }
-  html += "</div>";
+  // Chess.com account card deliberately hidden (not deleted) - chess.com
+  // as a data source is temporarily off while its session-renewal issue
+  // (see project_details/chesscom_session_investigation_2026-08-21.md) is
+  // being worked on. Backend logic (ChessApiFunctions.cpp,
+  // handleChessComInvalidate(), handleSave()'s remembme handling) is left
+  // fully intact on purpose - this is a UI-only hide, meant to come back
+  // once that's sorted, not a removal.
 
   // Always rendered alongside the chess.com card, regardless of which
   // data source is currently active - switching datasrc back and forth
@@ -610,12 +581,17 @@ static void handleConnections() {
 
   html += "<h2>Data source</h2><div class='card'>";
   html += "<select name='datasrc'>";
-  html += "<option value='0'"; html += (currentDataSource == DATA_SOURCE_CHESSCOM_WIFI ? " selected" : ""); html += ">Chess.com (live, over WiFi)</option>";
+  // Chess.com option deliberately not rendered here - see the "Chess.com
+  // account" card's own comment above for why (temporarily hidden, not
+  // removed). DATA_SOURCE_CHESSCOM_WIFI itself is untouched - a device
+  // already saved on it (from before this change) keeps working exactly
+  // as before, it's just not choosable from this dropdown right now.
+  //
   // No WiFi credentials to check here - ChessConnect is a BLE peripheral,
   // always selectable (see GameDataSource.cpp/ChessConnectBLE.cpp). Shows
   // "White"/"Black" instead of real names/ratings - this protocol never
   // discloses either.
-  html += "<option value='1'"; html += (currentDataSource == DATA_SOURCE_CHESSCONNECT_BLE ? " selected" : ""); html += ">ChessConnect (Bluetooth, DGT3000 Gateway)</option>";
+  html += "<option value='1'"; html += (currentDataSource != DATA_SOURCE_LICHESS_WIFI ? " selected" : ""); html += ">ChessConnect</option>";
   // Only selectable once actually connected - picking a source with no
   // credentials would just show "No Lichess token set" (see
   // LichessApiFunctions.cpp's lichessFetchActiveGame()) instead of doing
@@ -717,7 +693,8 @@ static void handleLogs() {
   html += "<div id='logbox' style='margin-top:12px'>";
   appendSystemLogHtml(html);
   html += "</div></div>";
-  html += "<div class='sitefoot'><a href='https://ivochessclock.com' target='_blank' rel='noopener'>ivochessclock.com &#8599;</a></div>";
+  html += "<div class='sitefoot'><a href='https://ivochessclock.com' target='_blank' rel='noopener'>ivochessclock.com &#8599;</a>"
+          " &middot; <a href='https://chessconnect.de/' target='_blank' rel='noopener'>Get ChessConnect app &#8599;</a></div>";
   html += PAGE_SCRIPT;
   html += "</body></html>";
   server.send(200, "text/html", html);
